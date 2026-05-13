@@ -1,0 +1,209 @@
+{
+    "headless": false,
+    "cookies": [
+        {
+          "name": "check",
+          "value": "true",
+          "domain": ".seek.com",
+          "path": "/",
+          "expires": -1,
+          "httpOnly": false,
+          "secure": false
+        },
+        {
+          "name": "JobseekerSessionId",
+          "value": "04f47f5e-d59e-4d57-9eb2-4559bea1cdf8",
+          "domain": ".employer.seek.com",
+          "path": "/",
+          "expires": 1747984517,
+          "httpOnly": false,
+          "secure": false
+        },
+        {
+          "name": "JobseekerVisitorId",
+          "value": "04f47f5e-d59e-4d57-9eb2-4559bea1cdf8",
+          "domain": ".employer.seek.com",
+          "path": "/",
+          "expires": 1874560517,
+          "httpOnly": false,
+          "secure": false
+        },
+        {
+          "name": "_legacy_auth0.sYNUTz7AyCjaFmy0DqzdSarWCIoh3R28.is.authenticated",
+          "value": "true",
+          "domain": "id.employer.seek.com",
+          "path": "/",
+          "expires": 1716966921,
+          "httpOnly": false,
+          "secure": true
+        },
+        {
+          "name": "auth0.sYNUTz7AyCjaFmy0DqzdSarWCIoh3R28.is.authenticated",
+          "value": "true",
+          "domain": "id.employer.seek.com",
+          "path": "/",
+          "expires": 1716966921,
+          "httpOnly": false,
+          "secure": true
+        },
+        {
+          "name": "intercom-id-f28vuejb",
+          "value": "3bc1c9e1-fb00-4d84-b5f2-418bf223e879",
+          "domain": ".seek.com",
+          "path": "/",
+          "expires": 1740210525,
+          "httpOnly": false,
+          "secure": false,
+          "sameSite": "Lax"
+        },
+        {
+          "name": "_dd_s",
+          "value": "rum=2&id=e068aa13-21c1-440c-8d43-c5030c5a2c61&created=1716880525493&expire=1716881585848",
+          "domain": "id.employer.seek.com",
+          "path": "/",
+          "expires": 1716881585,
+          "httpOnly": false,
+          "secure": false,
+          "sameSite": "Strict"
+        },
+        {
+          "name": "da_cdt",
+          "value": "visid_018fbdc370b3004e29f06e372bec0505003f000d012d8-sesid_1716880520562",
+          "domain": ".seek.com",
+          "path": "/",
+          "expires": -1,
+          "httpOnly": false,
+          "secure": false
+        },
+        {
+          "name": "intercom-session-f28vuejb",
+          "value": "Qi9VZEQ0eHA1T0x3TUZCZHhBcE9NMHQ0V0h5SmdNaGJkTVQ3eHh3dXgwMUdUQ3lpam1HV1V4Y2ZOeGd1R2ljYy0tcS82RVUvcW9oWkZEam1kb0NGcDh6UT09--55a666359f6f62849f72791c09b42f76a6081ceb",
+          "domain": ".seek.com",
+          "path": "/",
+          "expires": 1717485504,
+          "httpOnly": false,
+          "secure": false,
+          "sameSite": "Lax"
+        },
+        {
+          "name": "intercom-device-id-f28vuejb",
+          "value": "0a2906f7-a5de-4e77-9d1e-ba215db5b81e",
+          "domain": ".seek.com",
+          "path": "/",
+          "expires": 1740210704,
+          "httpOnly": false,
+          "secure": false,
+          "sameSite": "Lax"
+        },
+        {
+          "name": "mbox",
+          "value": "session#485c2e1bf5894e38803b1a4835001779#1716882387|PC#485c2e1bf5894e38803b1a4835001779.38_0#1780125507",
+          "domain": ".seek.com",
+          "path": "/",
+          "expires": 1780125507,
+          "httpOnly": false,
+          "secure": false
+        },
+        {
+          "name": "da_anz_hirer_sid",
+          "value": "1716880520562",
+          "domain": ".seek.com",
+          "path": "/",
+          "expires": 1716882509,
+          "httpOnly": false,
+          "secure": true
+        },
+        {
+          "name": "sol_id",
+          "value": "2f34c201-6858-4b54-98b6-f32bb82335e6",
+          "domain": ".seek.com",
+          "path": "/",
+          "expires": 1748416709,
+          "httpOnly": false,
+          "secure": true,
+          "sameSite": "Lax"
+        },
+        {
+          "name": "utag_main",
+          "value": "v_id:018fbdc370b3004e29f06e372bec0505003f000d012d8$_sn:2$_se:14%3Bexp-session$_ss:0%3Bexp-session$_st:1716882509729%3Bexp-session$ses_id:1716880520562%3Bexp-session$_pn:5%3Bexp-session$vapi_domain:seek.com$dc_visit:1$dc_event:16%3Bexp-session$_prevpage:candidate%20details%3Bexp-1716884309734$dc_region:ap-southeast-2%3Bexp-session",
+          "domain": ".seek.com",
+          "path": "/",
+          "expires": 1748416709,
+          "httpOnly": false,
+          "secure": true
+        }
+      ],
+    "local_storage": [
+        {
+            "store": "Local",
+            "key": "adv-account-selection-billing-id",
+            "value": "60220325"
+        },
+        {
+            "store": "Local",
+            "key": "intercom.intercom-state",
+            "value": "{\n \"app\": {\n  \"color\": \"#E62078\",\n  \"secondaryColor\": \"#E62078\",\n  \"openConfig\": {\n   \"layout\": \"default\",\n   \"openTo\": \"home\",\n   \"spaces\": [\n    {\n     \"type\": \"home\",\n     \"label\": \"Home\",\n     \"navigationLabel\": \"Home\",\n     \"badge\": null\n    },\n    {\n     \"type\": \"messages\",\n     \"label\": \"Messages\",\n     \"navigationLabel\": \"Messages\",\n     \"badge\": null\n    },\n    {\n     \"type\": \"tickets\",\n     \"label\": \"Tickets\",\n     \"navigationLabel\": \"Tickets\",\n     \"badge\": null\n    },\n    {\n     \"type\": \"news\",\n     \"label\": \"News\",\n     \"navigationLabel\": \"News\",\n     \"badge\": null\n    },\n    {\n     \"type\": \"tasks\",\n     \"label\": \"Tasks\",\n     \"navigationLabel\": \"Tasks\",\n     \"badge\": null\n    }\n   ],\n   \"userHasReceivedChecklists\": false,\n   \"userHasLiveNewsfeed\": false,\n   \"userHasTickets\": false\n  },\n  \"selfServeSuggestionsMatch\": false,\n  \"name\": \"SEEK\",\n  \"features\": {\n   \"anonymousInboundMessages\": true,\n   \"googleAnalytics\": false,\n   \"hubspotInstalled\": false,\n   \"inboundMessages\": true,\n   \"marketoEnrichmentInstalled\": false,\n   \"outboundMessages\": true,\n   \"googleAnalytics4Integration\": false\n  },\n  \"launcherLogoUrl\": null,\n  \"helpCenterSiteUrl\": \"https://intercom.help/seek-adcentre\",\n  \"inboundConversationsDisabled\": true,\n  \"isInstantBootEnabled\": true,\n  \"alignment\": \"right\",\n  \"horizontalPadding\": 20,\n  \"verticalPadding\": 20,\n  \"isDeveloperWorkspace\": false,\n  \"customGoogleAnalyticsTrackerId\": null\n },\n \"launcher\": {\n  \"isLauncherEnabled\": false\n },\n \"launcherDiscoveryMode\": {\n  \"hasDiscoveredLauncher\": true\n },\n \"user\": {\n  \"role\": \"user\",\n  \"locale\": \"en\",\n  \"hasConversations\": false\n },\n \"message\": {},\n \"conversations\": {\n  \"byId\": {}\n },\n \"openOnBoot\": {\n  \"type\": null,\n  \"metadata\": {},\n  \"lastOpenAtTimestamp\": 1716903583866\n },\n \"operator\": {\n  \"lastComposerEvent\": 0\n },\n \"router\": {\n  \"location\": null,\n  \"action\": null,\n  \"previousLocations\": []\n }\n}"
+        },
+        {
+            "store": "Local",
+            "key": "oi__scopes",
+            "value": "{\n \"scope\": \"advertiser:60220325\"\n}"
+        },
+        {
+            "store": "Local",
+            "key": "sol_id",
+            "value": "2f34c201-6858-4b54-98b6-f32bb82335e6"
+        },
+        {
+            "store": "Local",
+            "key": "adv-account-selection-account-id",
+            "value": "1776165"
+        },
+        {
+            "store": "Local",
+            "key": "adv-account-selection-seek-id",
+            "value": "60220325"
+        },
+        {
+            "store": "Local",
+            "key": "@@auth0spajs@@::sYNUTz7AyCjaFmy0DqzdSarWCIoh3R28::https://seek/api/talent::openid profile email offline_access advertiser:60220325",
+            "value": "{\n \"body\": {\n  \"access_token\": \"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InpMMlUtQWdMaE0ta3dUTWNKN2h6OSJ9.eyJodHRwOi8vc2Vlay9jbGFpbXMvZW1haWwiOiJhdWxpYWluZHJhaGVsQHJhZGlrYXJpLmlkIiwiaHR0cDovL3NlZWsvY2xhaW1zL2VtYWlsX3ZlcmlmaWVkIjp0cnVlLCJodHRwOi8vc2Vlay9jbGFpbXMvY291bnRyeSI6IklEIiwiaHR0cDovL3NlZWsvY2xhaW1zL2JyYW5kIjoic2VlayIsImh0dHA6Ly9zZWVrL2NsYWltcy9leHBlcmllbmNlIjoiZW1wbG95ZXIiLCJodHRwOi8vc2Vlay9jbGFpbXMvYWR2ZXJ0aXNlcl9pZCI6IjYwMjIwMzI1IiwiaHR0cDovL3NlZWsvY2xhaW1zL3VzZXJfaWQiOiIyNzcwOTI2IiwiaXNzIjoiaHR0cHM6Ly9hdXRoZW50aWNhdGUuc2Vlay5jb20vIiwic3ViIjoiYXV0aDB8MTUwNjQ0YWE3OTljNDM2MWE1ZDU1Mjc2NzA5OTcxYjUiLCJhdWQiOlsiaHR0cHM6Ly9zZWVrL2FwaS90YWxlbnQiLCJodHRwczovL2hpcmVyLm9ubGluZWF1dGgucHJvZC5vdXRmcmEueHl6L3VzZXJpbmZvIl0sImlhdCI6MTcxNjg4MDUyMiwiZXhwIjoxNzE2ODgxMTIyLCJzY29wZSI6Im9wZW5pZCBwcm9maWxlIGVtYWlsIG9mZmxpbmVfYWNjZXNzIiwiYXpwIjoic1lOVVR6N0F5Q2phRm15MERxemRTYXJXQ0lvaDNSMjgifQ.dIwvvefKnuIiGYHfQGEzCeg9ltGxzUZXsKRGxOemZ0TgK1H2LkpdFkxvwX-Q2InlLAMRrjs-fSB-GwW9yWqZS3donGWFVgxXUbj_PyQh59DTdD3Ej1NwTrRucaBcR9Pzd9JbkTFv0KhZEdPOZ77Nw7tpKIfxwMAMs1cEy2uR5GpE4k-6JXgBQ5GntrJv0aPGiVjyXl8jvZ_xot86keu1VxO95JX0VWsd0r03xK-3cXaHdg7Re-0zFCyyq5zRBrFcDrIjfUvB77M6HgKU586T3GmzlFQF2N1NUbXgzYYaM9LZlbCvFR3skULo4Oy4BY1s20bSwuD5fYn6vZEN6DYRqQ\",\n  \"refresh_token\": \"v1.MUiDpyhjsKEQ-kmW9iyl0IlfpA3KLV8ReIeeOfnSY4atrio4-cs7ge4DGcodyLEHZXLUGqnmcm-0f8KLH_iRaF0\",\n  \"id_token\": \"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InpMMlUtQWdMaE0ta3dUTWNKN2h6OSJ9.eyJodHRwOi8vc2Vlay9jbGFpbXMvYWR2ZXJ0aXNlcl9pZCI6IjYwMjIwMzI1IiwiaHR0cDovL3NlZWsvY2xhaW1zL3VzZXJfaWQiOiIyNzcwOTI2Iiwibmlja25hbWUiOiJhdWxpYWluZHJhaGVsIiwibmFtZSI6ImF1bGlhaW5kcmFoZWxAcmFkaWthcmkuaWQiLCJwaWN0dXJlIjoiaHR0cHM6Ly9zLmdyYXZhdGFyLmNvbS9hdmF0YXIvMWY0MTEzOTE5NDFjODVmNmU1ZGExMjJhZjZlZmRmMzI_cz00ODAmcj1wZyZkPWh0dHBzJTNBJTJGJTJGY2RuLmF1dGgwLmNvbSUyRmF2YXRhcnMlMkZhdS5wbmciLCJ1cGRhdGVkX2F0IjoiMjAyNC0wNS0yOFQwNzoxNToxNi41NzBaIiwiZW1haWwiOiJhdWxpYWluZHJhaGVsQHJhZGlrYXJpLmlkIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImlzcyI6Imh0dHBzOi8vYXV0aGVudGljYXRlLnNlZWsuY29tLyIsImF1ZCI6InNZTlVUejdBeUNqYUZteTBEcXpkU2FyV0NJb2gzUjI4IiwiaWF0IjoxNzE2ODgwNTIyLCJleHAiOjE3MTY4ODExMjIsInN1YiI6ImF1dGgwfDE1MDY0NGFhNzk5YzQzNjFhNWQ1NTI3NjcwOTk3MWI1Iiwic2lkIjoieE1zXzJRd1lLd2NwMUpoeW9Da09hLTBvWnNoT3BjVHEiLCJub25jZSI6Ik16SktXRXRNU1haTGNrcG9TVGhmWkdoWVZrdDFTRll0VEdaQlNGOWxRbWhFT1hCUU9FOHdUbWxZUWc9PSJ9.OQSyL0B86Y4Umh9BxcIVZhEwVi87KBooUcEA8J-SKOor48qsvh2UZqPgrbZ4k6GivS_ksC8A53JdE6V0R8fty6nzFjX2nSL6yXHLJ7vglBE_hImDSNZPddH2q6LfAtcRaH4Zxj5opY9paGGntUMcG6fcH3rUYHsi4HcLj1kWJBOLMBLgNaYKKD5_bXTZzoAi0h2YTDqZ0sHBpthjsHZ7V3iuicrRlTbbNv6-lHSlqh4yPsLPPygO1JJ81t-WMMQXawgjMSsJiEUwek-oSMSWHttPKYpfQwfh_5Z8v9xlhCblPK2WJDFw6nJjXRwUCFxWZ3gjoCwdYk3IvJhXdGX7Qg\",\n  \"scope\": \"openid profile email offline_access advertiser:60220325\",\n  \"expires_in\": 600,\n  \"token_type\": \"Bearer\",\n  \"decodedToken\": {\n   \"encoded\": {\n    \"header\": \"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InpMMlUtQWdMaE0ta3dUTWNKN2h6OSJ9\",\n    \"payload\": \"eyJodHRwOi8vc2Vlay9jbGFpbXMvYWR2ZXJ0aXNlcl9pZCI6IjYwMjIwMzI1IiwiaHR0cDovL3NlZWsvY2xhaW1zL3VzZXJfaWQiOiIyNzcwOTI2Iiwibmlja25hbWUiOiJhdWxpYWluZHJhaGVsIiwibmFtZSI6ImF1bGlhaW5kcmFoZWxAcmFkaWthcmkuaWQiLCJwaWN0dXJlIjoiaHR0cHM6Ly9zLmdyYXZhdGFyLmNvbS9hdmF0YXIvMWY0MTEzOTE5NDFjODVmNmU1ZGExMjJhZjZlZmRmMzI_cz00ODAmcj1wZyZkPWh0dHBzJTNBJTJGJTJGY2RuLmF1dGgwLmNvbSUyRmF2YXRhcnMlMkZhdS5wbmciLCJ1cGRhdGVkX2F0IjoiMjAyNC0wNS0yOFQwNzoxNToxNi41NzBaIiwiZW1haWwiOiJhdWxpYWluZHJhaGVsQHJhZGlrYXJpLmlkIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImlzcyI6Imh0dHBzOi8vYXV0aGVudGljYXRlLnNlZWsuY29tLyIsImF1ZCI6InNZTlVUejdBeUNqYUZteTBEcXpkU2FyV0NJb2gzUjI4IiwiaWF0IjoxNzE2ODgwNTIyLCJleHAiOjE3MTY4ODExMjIsInN1YiI6ImF1dGgwfDE1MDY0NGFhNzk5YzQzNjFhNWQ1NTI3NjcwOTk3MWI1Iiwic2lkIjoieE1zXzJRd1lLd2NwMUpoeW9Da09hLTBvWnNoT3BjVHEiLCJub25jZSI6Ik16SktXRXRNU1haTGNrcG9TVGhmWkdoWVZrdDFTRll0VEdaQlNGOWxRbWhFT1hCUU9FOHdUbWxZUWc9PSJ9\",\n    \"signature\": \"OQSyL0B86Y4Umh9BxcIVZhEwVi87KBooUcEA8J-SKOor48qsvh2UZqPgrbZ4k6GivS_ksC8A53JdE6V0R8fty6nzFjX2nSL6yXHLJ7vglBE_hImDSNZPddH2q6LfAtcRaH4Zxj5opY9paGGntUMcG6fcH3rUYHsi4HcLj1kWJBOLMBLgNaYKKD5_bXTZzoAi0h2YTDqZ0sHBpthjsHZ7V3iuicrRlTbbNv6-lHSlqh4yPsLPPygO1JJ81t-WMMQXawgjMSsJiEUwek-oSMSWHttPKYpfQwfh_5Z8v9xlhCblPK2WJDFw6nJjXRwUCFxWZ3gjoCwdYk3IvJhXdGX7Qg\"\n   },\n   \"header\": {\n    \"alg\": \"RS256\",\n    \"typ\": \"JWT\",\n    \"kid\": \"zL2U-AgLhM-kwTMcJ7hz9\"\n   },\n   \"claims\": {\n    \"__raw\": \"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InpMMlUtQWdMaE0ta3dUTWNKN2h6OSJ9.eyJodHRwOi8vc2Vlay9jbGFpbXMvYWR2ZXJ0aXNlcl9pZCI6IjYwMjIwMzI1IiwiaHR0cDovL3NlZWsvY2xhaW1zL3VzZXJfaWQiOiIyNzcwOTI2Iiwibmlja25hbWUiOiJhdWxpYWluZHJhaGVsIiwibmFtZSI6ImF1bGlhaW5kcmFoZWxAcmFkaWthcmkuaWQiLCJwaWN0dXJlIjoiaHR0cHM6Ly9zLmdyYXZhdGFyLmNvbS9hdmF0YXIvMWY0MTEzOTE5NDFjODVmNmU1ZGExMjJhZjZlZmRmMzI_cz00ODAmcj1wZyZkPWh0dHBzJTNBJTJGJTJGY2RuLmF1dGgwLmNvbSUyRmF2YXRhcnMlMkZhdS5wbmciLCJ1cGRhdGVkX2F0IjoiMjAyNC0wNS0yOFQwNzoxNToxNi41NzBaIiwiZW1haWwiOiJhdWxpYWluZHJhaGVsQHJhZGlrYXJpLmlkIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImlzcyI6Imh0dHBzOi8vYXV0aGVudGljYXRlLnNlZWsuY29tLyIsImF1ZCI6InNZTlVUejdBeUNqYUZteTBEcXpkU2FyV0NJb2gzUjI4IiwiaWF0IjoxNzE2ODgwNTIyLCJleHAiOjE3MTY4ODExMjIsInN1YiI6ImF1dGgwfDE1MDY0NGFhNzk5YzQzNjFhNWQ1NTI3NjcwOTk3MWI1Iiwic2lkIjoieE1zXzJRd1lLd2NwMUpoeW9Da09hLTBvWnNoT3BjVHEiLCJub25jZSI6Ik16SktXRXRNU1haTGNrcG9TVGhmWkdoWVZrdDFTRll0VEdaQlNGOWxRbWhFT1hCUU9FOHdUbWxZUWc9PSJ9.OQSyL0B86Y4Umh9BxcIVZhEwVi87KBooUcEA8J-SKOor48qsvh2UZqPgrbZ4k6GivS_ksC8A53JdE6V0R8fty6nzFjX2nSL6yXHLJ7vglBE_hImDSNZPddH2q6LfAtcRaH4Zxj5opY9paGGntUMcG6fcH3rUYHsi4HcLj1kWJBOLMBLgNaYKKD5_bXTZzoAi0h2YTDqZ0sHBpthjsHZ7V3iuicrRlTbbNv6-lHSlqh4yPsLPPygO1JJ81t-WMMQXawgjMSsJiEUwek-oSMSWHttPKYpfQwfh_5Z8v9xlhCblPK2WJDFw6nJjXRwUCFxWZ3gjoCwdYk3IvJhXdGX7Qg\",\n    \"http://seek/claims/advertiser_id\": \"60220325\",\n    \"http://seek/claims/user_id\": \"2770926\",\n    \"nickname\": \"auliaindrahel\",\n    \"name\": \"auliaindrahel@radikari.id\",\n    \"picture\": \"https://s.gravatar.com/avatar/1f411391941c85f6e5da122af6efdf32?s=480&r=pg&d=https%3A%2F%2Fcdn.auth0.com%2Favatars%2Fau.png\",\n    \"updated_at\": \"2024-05-28T07:15:16.570Z\",\n    \"email\": \"auliaindrahel@radikari.id\",\n    \"email_verified\": true,\n    \"iss\": \"https://authenticate.seek.com/\",\n    \"aud\": \"sYNUTz7AyCjaFmy0DqzdSarWCIoh3R28\",\n    \"iat\": 1716880522,\n    \"exp\": 1716881122,\n    \"sub\": \"auth0|150644aa799c4361a5d55276709971b5\",\n    \"sid\": \"xMs_2QwYKwcp1JhyoCkOa-0oZshOpcTq\",\n    \"nonce\": \"MzJKWEtMSXZLckpoSThfZGhYVkt1SFYtTGZBSF9lQmhEOXBQOE8wTmlYQg==\"\n   },\n   \"user\": {\n    \"http://seek/claims/advertiser_id\": \"60220325\",\n    \"http://seek/claims/user_id\": \"2770926\",\n    \"nickname\": \"auliaindrahel\",\n    \"name\": \"auliaindrahel@radikari.id\",\n    \"picture\": \"https://s.gravatar.com/avatar/1f411391941c85f6e5da122af6efdf32?s=480&r=pg&d=https%3A%2F%2Fcdn.auth0.com%2Favatars%2Fau.png\",\n    \"updated_at\": \"2024-05-28T07:15:16.570Z\",\n    \"email\": \"auliaindrahel@radikari.id\",\n    \"email_verified\": true,\n    \"sub\": \"auth0|150644aa799c4361a5d55276709971b5\"\n   }\n  },\n  \"audience\": \"https://seek/api/talent\",\n  \"oauthTokenScope\": \"openid profile email offline_access\",\n  \"client_id\": \"sYNUTz7AyCjaFmy0DqzdSarWCIoh3R28\"\n },\n \"expiresAt\": 1716881121\n}"
+        },
+        {
+            "store": "Local",
+            "key": "cm-user-actions",
+            "value": "{\n \"billable-alert\": {\n  \"2770926-75257438\": \"visible\"\n },\n \"recruiter-network-alert\": {\n  \"2770926-75257438\": \"visible\"\n },\n \"billable-new-feature-badge\": {\n  \"2770926-75257438\": \"visible\"\n },\n \"expected-salary-alert\": {\n  \"2770926\": \"visible\"\n },\n \"expected-salary-and-right-to-work-alert\": {\n  \"2770926\": \"visible\"\n },\n \"no-screening-expected-salary-and-right-to-work-alert\": {\n  \"2770926\": \"visible\"\n },\n \"application-card-state\": {\n  \"2770926\": \"expanded\"\n },\n \"certsy-verified-full-name-alert\": {\n  \"2770926\": \"visible\"\n }\n}"
+        },
+        {
+            "store": "Local",
+            "key": "tealium_timing",
+            "value": "{\n \"domain\": \"id.employer.seek.com\",\n \"pathname\": \"/candidates/\",\n \"query_string\": \"id=26521053\",\n \"timestamp\": 1716880709736,\n \"dns\": 0,\n \"connect\": 0,\n \"response\": 18,\n \"dom_loading_to_interactive\": 264,\n \"dom_interactive_to_complete\": 1462,\n \"load\": 0,\n \"time_to_first_byte\": 223,\n \"front_end\": 1710,\n \"fetch_to_response\": 223,\n \"fetch_to_complete\": 1951,\n \"fetch_to_interactive\": 489\n}"
+        },
+        {
+            "store": "Local",
+            "key": "adv-shopfront-features",
+            "value": "{\n \"features\": []\n}"
+        },
+        {
+            "store": "Session",
+            "key": "firstTimeUser",
+            "value": "false"
+        },
+        {
+            "store": "Session",
+            "key": "hasUtagCookie",
+            "value": "true"
+        },
+        {
+            "store": "Session",
+            "key": "$daevt",
+            "value": "fired"
+        }
+    ],
+    "email": "auliaindrahel@radikari.id",
+    "password": "P@ssw0rd",
+    "limit": 2,
+    "timeout": 60000,
+    "slowmo": 10000,
+    "api_destination": "http://84.247.147.108:9012/api/v1/candidate"
+}

@@ -1,0 +1,83 @@
+{
+    "headless": false,
+    "cookies": [
+        {
+            "name": "__cf_bm",
+            "value": "jydFuhVQ.qGjCyvA048BYUayD41BwuQOozxxewvvOAw-1716536659-1.0.1.1-O8y_.48M3o.pxgEdSIZR7cKKfWBmko0uaSEocHU8aYd2M5MSkX7YJk53NKTdnalIoZwRUDWZ_JX91ku0U6zoaw",
+            "domain": ".jooble.org",
+            "path": "/",
+            "expires": 1716538459,
+            "httpOnly": true,
+            "secure": true
+        },
+        {
+            "name": "builderSessionId",
+            "value": "9e618a5267c1438f9428114dbc461ec4",
+            "domain": ".jooble.org",
+            "path": "/",
+            "expires": 1716538438,
+            "httpOnly": false,
+            "secure": true
+        },
+        {
+            "name": "cf_clearance",
+            "value": "M1xlvEtRFsuwWpLYHCAqTwS7oNaFui35yHvxBuxuUHE-1716536665-1.0.1.1-KZPB.J2rxeSI38l3i2bRdHXk8iFxc2LZjuHPPzCX_Dmjzj8VrFDOy7fKVT8NT.rbOMFMLrG4olVdyMzm9nZMLQ",
+            "domain": ".jooble.org",
+            "path": "/",
+            "expires": 1748072665,
+            "httpOnly": true,
+            "secure": true
+        },
+        {
+            "name": "ULang",
+            "value": "0",
+            "domain": "id.jooble.org",
+            "path": "/",
+            "expires": 1748072656,
+            "httpOnly": false,
+            "secure": false
+        }
+    ],
+    "local_storage": [
+        {
+            "store": "Local",
+            "key": "user_company_name",
+            "value": "PT.RADIKARI"
+        },
+        {
+            "store": "Local",
+            "key": "ACCOUNT_STATUS_ANIMATION",
+            "value": "{\n \"userEmail\": false,\n \"corpEmail\": false,\n \"onModeration\": false,\n \"companyConfirm\": false,\n \"noAnimation\": true\n}"
+        },
+        {
+            "store": "Local",
+            "key": "employer_info",
+            "value": "{\n \"staffSize\": 4,\n \"website\": \"\",\n \"industry\": \"Human Resources\",\n \"companyName\": \"PT.RADIKARI\",\n \"description\": null\n}"
+        },
+        {
+            "store": "Local",
+            "key": "user_role",
+            "value": "Supervisor"
+        },
+        {
+            "store": "Local",
+            "key": "builderVisitorId",
+            "value": "29ff34d60b4a4fbba8919a9ee4b37b6b"
+        },
+        {
+            "store": "Local",
+            "key": "access_token",
+            "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJKb29ibGVfTmFtZV9DbGFpbSI6InlvZGllQHJhZGlrYXJpLmlkIiwiSm9vYmxlX1JvbGVfQ2xhaW0iOiJFbXBsb3llciIsIm5iZiI6MTcxNjUzNjcxMSwiZXhwIjoxNzQ4MDcyNzExLCJpc3MiOiJFbXBsb3llckF1dGgiLCJhdWQiOiJodHRwOi8vam9vYmxlLm9yZy8ifQ.8VtsfdzCWCCg-o3THs7LQB33Y4eeg2nc8rlHIetBOHo"
+        },
+        {
+            "store": "Local",
+            "key": "user_email",
+            "value": "yodie@radikari.id"
+        }
+    ],
+    "limit": 100000000000000,
+    "api_destination": "http://103.163.175.105:9003/api/v1/candidate",
+    "timeout": 60000,
+    "slowmo": 0,
+    "db_path": "../db/jooble.db"
+}

@@ -1,0 +1,15 @@
+node_modules/
+build/
+storage/*
+.env
+!storage/README.md
+jooble.json
+kitalulus.json
+seek.json
+glints.json
+pintarnya.json
+cache/*
+db/*
+!db/README.md
+settings.json
+kitalulus-v2.json

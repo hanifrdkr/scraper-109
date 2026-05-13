@@ -1,0 +1,7 @@
+{
+    "headless": false,
+    "cookies": [],
+    "local_storage": [],
+    "api_destination": "http://localhost:3000/upload",
+    "limit": 2
+}

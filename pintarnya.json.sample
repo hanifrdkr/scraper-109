@@ -1,0 +1,18 @@
+{
+  "headless": false,
+  "email": "",
+  "password": "",
+  "limit": 10,
+  "job_vacancies": [
+    {
+      "position": "Front End Programmer",
+      "location": "Candi Plaza"
+    }
+  ],
+  "api_destination": "",
+  "db_path": "../db/pintarnya.db",
+  "delay": 300000,
+  "delay_after": 10,
+  "timeout": 60000,
+  "max_retry": 3
+}

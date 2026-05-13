@@ -1,0 +1,11 @@
+{
+    "headless": false,
+    "base_url": "https://employer.kitalulus.com",
+    "email": "aang.koesmanggala@radikari.co.id",
+    "password": "YrRgEEcm!g6x7yf",
+    "api_destination": "http://103.150.88.166/api/v1/candidate",
+    "limit": 1000,
+    "timeout": 120000,
+    "slowmo": 5000,
+    "db_path": "../db/kitalulus.db"
+}

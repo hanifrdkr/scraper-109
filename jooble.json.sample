@@ -1,0 +1,10 @@
+{
+    "headless": true,
+    "cookies": [],
+    "local_storage": [],
+    "limit": 2,
+    "api_destination": "http://localhost:3000/upload",
+    "timeout": 30000,
+    "slowmo": 10000,
+    "db_path": "../db/jooble.db"
+}

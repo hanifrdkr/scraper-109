@@ -1,0 +1,11 @@
+{
+    "headless": true,
+    "base_url": "https://employer.kitalulus.com",
+    "email": "",
+    "password": "",
+    "api_destination": "http://localhost:3000/upload",
+    "limit": 2,
+    "timeout": 30000,
+    "slowmo": 10000,
+    "db_path": "../db/kitalulus.db"
+}

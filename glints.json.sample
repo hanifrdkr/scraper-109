@@ -1,0 +1,10 @@
+{
+    "headless": false,
+    "cookies": [],
+    "local_storage": [],
+    "api_destination": "http://localhost:3000/upload",
+    "limit": 2,
+    "timeout": 60000,
+    "slowmo": 10000,
+    "db_path": "../db/glints.db"
+}
