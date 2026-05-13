@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "dev:viewer": "ts-node src/viewer.ts",
     "dev:kitalulus": "ts-node src/server.ts kitalulus",
     "dev:kitalulus-v2-vacancies": "ts-node src/server.ts kitalulus-v2-vacancies",
     "dev:kitalulus-v2-applicants": "ts-node src/server.ts kitalulus-v2-applicants",
