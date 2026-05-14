@@ -5,7 +5,7 @@ import { execFileSync } from "child_process";
 import FormData from "form-data";
 import axios from "axios";
 import sqlite3 from 'sqlite3';
-import pdfParse from "pdf-parse";
+import { PDFParse } from "pdf-parse";
 
 export interface KitaLulusConfigJson {
   headless: boolean;
@@ -101,6 +101,11 @@ type ApplicantDB = Pick<Applicant, "email"> & {
   id: number;
 }
 
+type ApplicantDetailHandle = {
+  page: playwright.Page;
+  cleanup: () => Promise<void>;
+};
+
 export class KitaLulus {
   private HEADLESS: boolean = true;
   private LIMIT: number = 0;
@@ -149,6 +154,49 @@ export class KitaLulus {
     this.DB_PATH = path.join(__dirname, config.db_path);
     this.DB = new sqlite3.Database(this.DB_PATH);
     console.info("CONFIG KITA LULUS LOADED");
+  }
+
+  getBrowserFallbackExecutablePath(): string | null {
+    const candidates = [
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/opt/homebrew/bin/chromium",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  async launchBrowser(): Promise<playwright.Browser> {
+    const launchOptions: Parameters<typeof playwright.chromium.launch>[0] = {
+      headless: this.HEADLESS,
+      slowMo: this.SLOWMO,
+    };
+
+    try {
+      return await playwright.chromium.launch(launchOptions);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("Executable doesn't exist")) {
+        throw error;
+      }
+
+      const fallbackExecutablePath = this.getBrowserFallbackExecutablePath();
+      if (!fallbackExecutablePath) {
+        throw error;
+      }
+
+      console.info(`[LOGIN] Playwright bundled Chromium missing. Falling back to local browser: ${fallbackExecutablePath}`);
+      return await playwright.chromium.launch({
+        ...launchOptions,
+        executablePath: fallbackExecutablePath,
+      });
+    }
   }
 
   /**
@@ -588,10 +636,7 @@ export class KitaLulus {
     }
 
     try {
-      browser = await playwright.chromium.launch({
-        headless: this.HEADLESS,
-        slowMo: this.SLOWMO,
-      });
+      browser = await this.launchBrowser();
       const page = await browser.newPage();
       page.setDefaultTimeout(this.TIMEOUT);
 
@@ -616,6 +661,7 @@ export class KitaLulus {
       console.info("[TOOLTIP] Pelamar tooltips done.");
 
       await this.removeButtonOK(page);
+      await this.dismissMarketingOverlay(page);
       await this.removeAllFilterApplicant(page);
 
       let pageNumber = 1;
@@ -648,12 +694,13 @@ export class KitaLulus {
           const appliedFor = await this.extractAppliedForFromRow(row);
           console.info(`[CANDIDATE] Opening row ${rowIndex + 1}/${rowCount}${appliedFor ? ` for "${appliedFor}"` : ""}...`);
 
-          let detailPage: playwright.Page | null = null;
+          let detailHandle: ApplicantDetailHandle | null = null;
           try {
-            detailPage = await this.openApplicantDetailPage(page, rowIndex);
+            detailHandle = await this.openApplicantDetailPage(page, rowIndex);
             console.info("[CANDIDATE] Detail page opened.");
 
-            const applicant = await this.scrapeApplicantDetails("applicant", detailPage, appliedFor);
+            await this.dismissMarketingOverlay(detailHandle.page);
+            const applicant = await this.scrapeApplicantDetails("applicant", detailHandle.page, appliedFor);
 
             if (applicant.whatapps.contact_number === "") {
               console.info("[SKIP] No phone number or already in DB. Skipping send.");
@@ -668,8 +715,8 @@ export class KitaLulus {
           } catch (error) {
             console.error(`[ERROR] Failed to process applicant row ${rowIndex + 1}:`, error);
           } finally {
-            if (detailPage && !detailPage.isClosed()) {
-              await detailPage.close();
+            if (detailHandle) {
+              await detailHandle.cleanup();
             }
           }
         }
@@ -701,6 +748,36 @@ export class KitaLulus {
     if (await page.getByRole("button", { name: "OK" }).count() > 0) {
       await page.getByRole("button", { name: "OK" }).click();
       console.info("Do OK ....");
+    }
+  }
+
+  async dismissMarketingOverlay(page: playwright.Page): Promise<void> {
+    try {
+      const registerButton = page.getByRole("button", { name: /Daftar Sekarang Gratis!/i });
+      const registerText = page.getByText(/HR LEADER GATHERING/i);
+
+      if ((await registerButton.count()) === 0 && (await registerText.count()) === 0) {
+        return;
+      }
+
+      console.info("[TOOLTIP] Dismissing marketing overlay...");
+
+      const closeButton = await this.findFirstVisibleLocator([
+        page.getByRole("button", { name: /Tutup|Close|Lewati/i }),
+        page.locator('button[aria-label="Close"]'),
+        page.locator('button[aria-label="Tutup"]'),
+        page.locator("button").filter({ has: page.locator("svg") }).last(),
+      ], 1500);
+
+      if (closeButton) {
+        await closeButton.click().catch(() => undefined);
+      } else {
+        await page.keyboard.press("Escape").catch(() => undefined);
+      }
+
+      await page.waitForTimeout(500);
+    } catch (error) {
+      console.error("[WARN] Failed to dismiss marketing overlay:", error);
     }
   }
 
@@ -786,21 +863,64 @@ export class KitaLulus {
     }
   }
 
-  async openApplicantDetailPage(page: playwright.Page, rowIndex: number): Promise<playwright.Page> {
+  async openApplicantDetailPage(page: playwright.Page, rowIndex: number): Promise<ApplicantDetailHandle> {
     const row = page.locator(this.APPLICANT_TABLE_ROW_SELECTOR).nth(rowIndex);
+    const listUrl = page.url();
+    await this.dismissMarketingOverlay(page);
     await row.click();
     await page.waitForTimeout(500);
+
+    if (await page.locator(this.APPLICANT_DETAIL_NAME_SELECTOR).count() > 0) {
+      console.info("[CANDIDATE] Using in-page applicant preview.");
+      return {
+        page,
+        cleanup: async () => {
+          try {
+            await page.keyboard.press("Escape");
+          } catch {
+            // Ignore close failures on the preview drawer.
+          }
+        },
+      };
+    }
 
     const detailButton = page.getByRole("button", { name: "Lihat detail" });
     await detailButton.waitFor({ state: "visible", timeout: this.TIMEOUT });
 
-    const popupPromise = page.waitForEvent("popup");
+    const popupPromise = page.waitForEvent("popup", { timeout: 5000 }).catch(() => null);
     await detailButton.click();
     const detailPage = await popupPromise;
-    detailPage.setDefaultTimeout(this.TIMEOUT);
-    await detailPage.waitForLoadState("domcontentloaded");
 
-    return detailPage;
+    if (detailPage) {
+      detailPage.setDefaultTimeout(this.TIMEOUT);
+      await detailPage.waitForLoadState("domcontentloaded");
+      return {
+        page: detailPage,
+        cleanup: async () => {
+          if (!detailPage.isClosed()) {
+            await detailPage.close();
+          }
+        },
+      };
+    }
+
+    try {
+      await page.waitForTimeout(1000);
+      await page.locator(this.APPLICANT_DETAIL_NAME_SELECTOR).waitFor({ state: "visible", timeout: 5000 });
+      console.info("[CANDIDATE] 'Lihat detail' stayed in the same page. Scraping current page.");
+      return {
+        page,
+        cleanup: async () => {
+          if (page.url() !== listUrl) {
+            await page.goBack({ waitUntil: "domcontentloaded" }).catch(() => undefined);
+          } else {
+            await page.keyboard.press("Escape").catch(() => undefined);
+          }
+        },
+      };
+    } catch (error) {
+      throw new Error(`Applicant detail did not open in popup or same page: ${String(error)}`);
+    }
   }
 
   async nextApplicantListPage(page: playwright.Page): Promise<boolean> {
@@ -1056,6 +1176,19 @@ export class KitaLulus {
     return applicant;
   }
 
+  async getOptionalText(locator: playwright.Locator): Promise<string> {
+    try {
+      if ((await locator.count()) === 0) {
+        return "";
+      }
+
+      const text = await locator.first().textContent({ timeout: 1500 });
+      return text?.trim() ?? "";
+    } catch {
+      return "";
+    }
+  }
+
   /**
    * Extracts the name from the given page.
    *
@@ -1064,7 +1197,7 @@ export class KitaLulus {
    *                              The name is cleaned by removing any commas.
    */
   async extractName(page: any): Promise<string> {
-      const nameText = await page.locator(this.APPLICANT_DETAIL_NAME_SELECTOR).textContent();
+      const nameText = await this.getOptionalText(page.locator(this.APPLICANT_DETAIL_NAME_SELECTOR));
       return nameText.replace(",", "")
   }
 
@@ -1075,7 +1208,7 @@ export class KitaLulus {
    * @returns {Promise<string>} - A promise that resolves to the extracted age as a string.
    */
   async extractAge(page: any): Promise<string> {
-      const ageText = await page.locator(this.APPLICANT_DETAIL_AGE_SELECTOR).textContent();
+      const ageText = await this.getOptionalText(page.locator(this.APPLICANT_DETAIL_AGE_SELECTOR));
       return ageText;
   }
 
@@ -1086,7 +1219,7 @@ export class KitaLulus {
    * @returns {Promise<string>} - A promise that resolves to the extracted summary or about section as a string.
    */
   async extractAbout(page: any): Promise<string> {
-      const aboutText = await page.locator(this.APPLICANT_DETAIL_ABOUT_SELECTOR).textContent();
+      const aboutText = await this.getOptionalText(page.locator(this.APPLICANT_DETAIL_ABOUT_SELECTOR));
       return aboutText;
   }
 
@@ -1097,7 +1230,7 @@ export class KitaLulus {
    * @returns {Promise<string>} - A promise that resolves to the extracted nick name as a string.
    */
   async extractNickName(page: any): Promise<string> {
-      const nickNameText = await page.locator(this.APPLICANT_NICK_NAME_SELECTOR).locator("p").textContent();
+      const nickNameText = await this.getOptionalText(page.locator(this.APPLICANT_NICK_NAME_SELECTOR).locator("p"));
       return nickNameText;
   }
 
@@ -1109,7 +1242,7 @@ export class KitaLulus {
    *                              If the birth date is not found or in an invalid format, an empty string is returned.
    */
   async extractBirthday(page: any): Promise<string> {
-      const birthdayText = await page.locator(this.APPLICANT_BIRTHDAY_SELECTOR).locator("p").textContent();
+      const birthdayText = await this.getOptionalText(page.locator(this.APPLICANT_BIRTHDAY_SELECTOR).locator("p"));
       return this.ConvertDate(birthdayText);
   }
 
@@ -1122,7 +1255,7 @@ export class KitaLulus {
    *                              If the gender is not found or in an invalid format, an empty string is returned.
    */
   async extractGender(page: any): Promise<string> {
-    const genderText = await page.locator(this.APPLICANT_GENDER_SELECTOR).locator("p").textContent()
+    const genderText = await this.getOptionalText(page.locator(this.APPLICANT_GENDER_SELECTOR).locator("p"));
     const genderType: Record<string, string> = {
       'Perempuan': 'FEMALE',
       'Laki-Laki': 'MALE'
@@ -1137,7 +1270,7 @@ export class KitaLulus {
    * @returns {Promise<string>} - A promise that resolves to the extracted location as a string.
    */
   async extractLocation(page: any): Promise<string> {
-      const locationText = await page.locator(this.APPLICANT_DOMISLI_SELECTOR).locator("p").textContent();
+      const locationText = await this.getOptionalText(page.locator(this.APPLICANT_DOMISLI_SELECTOR).locator("p"));
       return locationText;
   }
 
@@ -1170,37 +1303,54 @@ export class KitaLulus {
  *          If the CV URL is not found or an error occurs during fetching or storing, an empty string is returned.
  */
   async extractCV(page: any): Promise<{ filePath: string; filename: string; text: string; publicUrl: string; method: string }> {
+    /*
     let filePath = "";
+    await this.dismissMarketingOverlay(page);
 
-    console.info("[CV] Clicking CV tab...");
-    await page.getByRole('tab', { name: 'CV' }).click();
+    const cvTab = page.getByRole('tab', { name: 'CV' });
+    if ((await cvTab.count()) > 0) {
+      console.info("[CV] Clicking CV tab...");
+      await cvTab.click();
+      await page.waitForTimeout(1000);
 
-    if (await page.locator("id=imgApplicantDetailCVEmptyState").count() > 0) {
-      console.info("[CV] No CV uploaded for this applicant.");
-      return { filePath, filename: "", text: "", publicUrl: "", method: "" };
-    }
+      if (await page.locator("id=imgApplicantDetailCVEmptyState").count() > 0) {
+        console.info("[CV] No CV uploaded on the CV tab.");
+      } else {
+        const cvDownloadButton = await this.findFirstVisibleLocator([
+          page.locator('[data-test-id="btnApplicantDetailDownloadCV"]'),
+          page.getByRole("button", { name: /Unduh CV/i }),
+          page.getByText("Unduh CV", { exact: true }),
+          page.locator("button").filter({ hasText: /Unduh CV/i }),
+          page.locator("a").filter({ hasText: /Unduh CV/i }),
+        ], 5000);
 
-    console.info("[CV] Waiting for CV download button...");
-    await this.checkLazyLoadedElement(page, '[data-test-id="btnApplicantDetailDownloadCV"]')
-
-    if (await page.locator('[data-test-id="btnApplicantDetailDownloadCV"]').count() > 0) {
-      // Open a new page when the CV download button is clicked
-      const pagePromise = page.waitForEvent('popup');
-      await page.locator('[data-test-id="btnApplicantDetailDownloadCV"]').click();
-      const newPage = await pagePromise;
-      await newPage.waitForLoadState();
-
-      // Get the URL of the downloaded CV
-      const cvURL = await newPage.url();
-
-      // Fetch and store the CV
-      filePath = await this.fetchAndStore(cvURL);
-
-      // Close the new page
-      await newPage.close();
+        if (cvDownloadButton) {
+          console.info("[CV] Found CV download button.");
+          filePath = await this.captureFileFromPopupOrCurrentPage(page, cvDownloadButton, "CV");
+        } else {
+          console.info("[CV] CV download button not present on CV tab.");
+        }
+      }
     }
 
     if (filePath === "") {
+      const profileTab = page.getByRole('tab', { name: 'Profil' });
+      const profileDownloadButton = page.getByText('Unduh Profil', { exact: true });
+
+      if ((await profileTab.count()) > 0) {
+        console.info("[CV] Trying Profil tab fallback...");
+        await profileTab.click();
+        await page.waitForTimeout(1000);
+      }
+
+      if (await this.waitForLocatorVisible(profileDownloadButton, 3000)) {
+        console.info("[CV] Found 'Unduh Profil' fallback.");
+        filePath = await this.captureFileFromPopupOrCurrentPage(page, profileDownloadButton, "Profil");
+      }
+    }
+
+    if (filePath === "") {
+      console.info("[CV] No downloadable CV/Profile document found for this applicant.");
       return { filePath, filename: "", text: "", publicUrl: "", method: "" };
     }
 
@@ -1212,6 +1362,86 @@ export class KitaLulus {
       publicUrl: this.buildStoragePublicUrl(filePath),
       method: extracted.method,
     };
+    */
+
+    // CV/profile download is intentionally disabled for now.
+    // The scraper will only collect data visible in the applicant profile preview/detail.
+    console.info("[CV] Skipping CV/Profile download. Scraping profile preview data only.");
+    return { filePath: "", filename: "", text: "", publicUrl: "", method: "" };
+  }
+
+  async waitForLocatorVisible(locator: playwright.Locator, timeoutMs: number): Promise<boolean> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      try {
+        if ((await locator.count()) > 0 && (await locator.first().isVisible())) {
+          return true;
+        }
+      } catch {
+        // Ignore transient DOM state while polling.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return false;
+  }
+
+  async findFirstVisibleLocator(
+    locators: playwright.Locator[],
+    timeoutMs: number,
+  ): Promise<playwright.Locator | null> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      for (const locator of locators) {
+        try {
+          if ((await locator.count()) > 0 && (await locator.first().isVisible())) {
+            return locator.first();
+          }
+        } catch {
+          // Ignore transient DOM state while polling.
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return null;
+  }
+
+  async captureFileFromPopupOrCurrentPage(
+    page: playwright.Page,
+    trigger: playwright.Locator,
+    label: string,
+  ): Promise<string> {
+    const popupPromise = page.waitForEvent("popup", { timeout: 5000 }).catch(() => null);
+    const currentUrl = page.url();
+
+    await trigger.click();
+
+    const popupPage = await popupPromise;
+    if (popupPage) {
+      await popupPage.waitForLoadState("domcontentloaded").catch(() => undefined);
+      const fileUrl = popupPage.url();
+      console.info(`[CV] ${label} opened in popup: ${fileUrl}`);
+      const filePath = await this.fetchAndStore(fileUrl);
+      await popupPage.close().catch(() => undefined);
+      return filePath;
+    }
+
+    await page.waitForTimeout(1500);
+    const navigatedUrl = page.url();
+    if (navigatedUrl !== currentUrl && !navigatedUrl.includes("employer.kitalulus.com")) {
+      console.info(`[CV] ${label} opened in current page: ${navigatedUrl}`);
+      const filePath = await this.fetchAndStore(navigatedUrl);
+      await page.goBack({ waitUntil: "domcontentloaded" }).catch(() => undefined);
+      return filePath;
+    }
+
+    const href = await trigger.getAttribute("href").catch(() => null);
+    if (href) {
+      const resolvedUrl = href.startsWith("http") ? href : new URL(href, page.url()).toString();
+      console.info(`[CV] ${label} resolved from href: ${resolvedUrl}`);
+      return await this.fetchAndStore(resolvedUrl);
+    }
+
+    return "";
   }
 
   /**
@@ -1338,7 +1568,7 @@ export class KitaLulus {
       };
 
       const contentType = String(response.headers['content-type'] ?? '').split(";")[0];
-      const extension = mimeTypes[contentType] ?? path.extname(new URL(imageUrl).pathname).replace(".", "") || "bin";
+      const extension = mimeTypes[contentType] ?? (path.extname(new URL(imageUrl).pathname).replace(".", "") || "bin");
       const filePath = path.join(__dirname, "../storage/", `${Date.now()}.${extension}`);
 
       await fs.promises.writeFile(filePath, response.data);
@@ -1385,7 +1615,9 @@ export class KitaLulus {
   async extractPdfText(filePath: string): Promise<string> {
     try {
       const buffer = await fs.promises.readFile(filePath);
-      const parsed = await pdfParse(buffer);
+      const parser = new PDFParse({ data: buffer });
+      const parsed = await parser.getText();
+      await parser.destroy();
       return parsed.text.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
     } catch (error) {
       console.error("[WARN] pdf-parse failed:", error);

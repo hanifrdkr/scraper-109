@@ -20,7 +20,7 @@ const child_process_1 = require("child_process");
 const form_data_1 = __importDefault(require("form-data"));
 const axios_1 = __importDefault(require("axios"));
 const sqlite3_1 = __importDefault(require("sqlite3"));
-const pdf_parse_1 = __importDefault(require("pdf-parse"));
+const pdf_parse_1 = require("pdf-parse");
 class KitaLulus {
     constructor(config) {
         this.HEADLESS = true;
@@ -65,6 +65,42 @@ class KitaLulus {
         this.DB_PATH = path_1.default.join(__dirname, config.db_path);
         this.DB = new sqlite3_1.default.Database(this.DB_PATH);
         console.info("CONFIG KITA LULUS LOADED");
+    }
+    getBrowserFallbackExecutablePath() {
+        const candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/opt/homebrew/bin/chromium",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ];
+        for (const candidate of candidates) {
+            if (fs_1.default.existsSync(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+    launchBrowser() {
+        return __awaiter(this, void 0, void 0, function* () {
+            const launchOptions = {
+                headless: this.HEADLESS,
+                slowMo: this.SLOWMO,
+            };
+            try {
+                return yield playwright_1.default.chromium.launch(launchOptions);
+            }
+            catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                if (!message.includes("Executable doesn't exist")) {
+                    throw error;
+                }
+                const fallbackExecutablePath = this.getBrowserFallbackExecutablePath();
+                if (!fallbackExecutablePath) {
+                    throw error;
+                }
+                console.info(`[LOGIN] Playwright bundled Chromium missing. Falling back to local browser: ${fallbackExecutablePath}`);
+                return yield playwright_1.default.chromium.launch(Object.assign(Object.assign({}, launchOptions), { executablePath: fallbackExecutablePath }));
+            }
+        });
     }
     /**
      * Cleanses the applied date by removing the pattern "Melamar pada ".
@@ -477,10 +513,7 @@ class KitaLulus {
                 return;
             }
             try {
-                browser = yield playwright_1.default.chromium.launch({
-                    headless: this.HEADLESS,
-                    slowMo: this.SLOWMO,
-                });
+                browser = yield this.launchBrowser();
                 const page = yield browser.newPage();
                 page.setDefaultTimeout(this.TIMEOUT);
                 console.info("[LOGIN] Navigating to signin page...");
@@ -499,6 +532,7 @@ class KitaLulus {
                 yield this.tooltipsPelamar(page);
                 console.info("[TOOLTIP] Pelamar tooltips done.");
                 yield this.removeButtonOK(page);
+                yield this.dismissMarketingOverlay(page);
                 yield this.removeAllFilterApplicant(page);
                 let pageNumber = 1;
                 let hasNextPage = true;
@@ -524,11 +558,12 @@ class KitaLulus {
                         const row = rows.nth(rowIndex);
                         const appliedFor = yield this.extractAppliedForFromRow(row);
                         console.info(`[CANDIDATE] Opening row ${rowIndex + 1}/${rowCount}${appliedFor ? ` for "${appliedFor}"` : ""}...`);
-                        let detailPage = null;
+                        let detailHandle = null;
                         try {
-                            detailPage = yield this.openApplicantDetailPage(page, rowIndex);
+                            detailHandle = yield this.openApplicantDetailPage(page, rowIndex);
                             console.info("[CANDIDATE] Detail page opened.");
-                            const applicant = yield this.scrapeApplicantDetails("applicant", detailPage, appliedFor);
+                            yield this.dismissMarketingOverlay(detailHandle.page);
+                            const applicant = yield this.scrapeApplicantDetails("applicant", detailHandle.page, appliedFor);
                             if (applicant.whatapps.contact_number === "") {
                                 console.info("[SKIP] No phone number or already in DB. Skipping send.");
                                 continue;
@@ -542,8 +577,8 @@ class KitaLulus {
                             console.error(`[ERROR] Failed to process applicant row ${rowIndex + 1}:`, error);
                         }
                         finally {
-                            if (detailPage && !detailPage.isClosed()) {
-                                yield detailPage.close();
+                            if (detailHandle) {
+                                yield detailHandle.cleanup();
                             }
                         }
                     }
@@ -576,6 +611,34 @@ class KitaLulus {
             if ((yield page.getByRole("button", { name: "OK" }).count()) > 0) {
                 yield page.getByRole("button", { name: "OK" }).click();
                 console.info("Do OK ....");
+            }
+        });
+    }
+    dismissMarketingOverlay(page) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const registerButton = page.getByRole("button", { name: /Daftar Sekarang Gratis!/i });
+                const registerText = page.getByText(/HR LEADER GATHERING/i);
+                if ((yield registerButton.count()) === 0 && (yield registerText.count()) === 0) {
+                    return;
+                }
+                console.info("[TOOLTIP] Dismissing marketing overlay...");
+                const closeButton = yield this.findFirstVisibleLocator([
+                    page.getByRole("button", { name: /Tutup|Close|Lewati/i }),
+                    page.locator('button[aria-label="Close"]'),
+                    page.locator('button[aria-label="Tutup"]'),
+                    page.locator("button").filter({ has: page.locator("svg") }).last(),
+                ], 1500);
+                if (closeButton) {
+                    yield closeButton.click().catch(() => undefined);
+                }
+                else {
+                    yield page.keyboard.press("Escape").catch(() => undefined);
+                }
+                yield page.waitForTimeout(500);
+            }
+            catch (error) {
+                console.error("[WARN] Failed to dismiss marketing overlay:", error);
             }
         });
     }
@@ -667,16 +730,60 @@ class KitaLulus {
     openApplicantDetailPage(page, rowIndex) {
         return __awaiter(this, void 0, void 0, function* () {
             const row = page.locator(this.APPLICANT_TABLE_ROW_SELECTOR).nth(rowIndex);
+            const listUrl = page.url();
+            yield this.dismissMarketingOverlay(page);
             yield row.click();
             yield page.waitForTimeout(500);
+            if ((yield page.locator(this.APPLICANT_DETAIL_NAME_SELECTOR).count()) > 0) {
+                console.info("[CANDIDATE] Using in-page applicant preview.");
+                return {
+                    page,
+                    cleanup: () => __awaiter(this, void 0, void 0, function* () {
+                        try {
+                            yield page.keyboard.press("Escape");
+                        }
+                        catch (_a) {
+                            // Ignore close failures on the preview drawer.
+                        }
+                    }),
+                };
+            }
             const detailButton = page.getByRole("button", { name: "Lihat detail" });
             yield detailButton.waitFor({ state: "visible", timeout: this.TIMEOUT });
-            const popupPromise = page.waitForEvent("popup");
+            const popupPromise = page.waitForEvent("popup", { timeout: 5000 }).catch(() => null);
             yield detailButton.click();
             const detailPage = yield popupPromise;
-            detailPage.setDefaultTimeout(this.TIMEOUT);
-            yield detailPage.waitForLoadState("domcontentloaded");
-            return detailPage;
+            if (detailPage) {
+                detailPage.setDefaultTimeout(this.TIMEOUT);
+                yield detailPage.waitForLoadState("domcontentloaded");
+                return {
+                    page: detailPage,
+                    cleanup: () => __awaiter(this, void 0, void 0, function* () {
+                        if (!detailPage.isClosed()) {
+                            yield detailPage.close();
+                        }
+                    }),
+                };
+            }
+            try {
+                yield page.waitForTimeout(1000);
+                yield page.locator(this.APPLICANT_DETAIL_NAME_SELECTOR).waitFor({ state: "visible", timeout: 5000 });
+                console.info("[CANDIDATE] 'Lihat detail' stayed in the same page. Scraping current page.");
+                return {
+                    page,
+                    cleanup: () => __awaiter(this, void 0, void 0, function* () {
+                        if (page.url() !== listUrl) {
+                            yield page.goBack({ waitUntil: "domcontentloaded" }).catch(() => undefined);
+                        }
+                        else {
+                            yield page.keyboard.press("Escape").catch(() => undefined);
+                        }
+                    }),
+                };
+            }
+            catch (error) {
+                throw new Error(`Applicant detail did not open in popup or same page: ${String(error)}`);
+            }
         });
     }
     nextApplicantListPage(page) {
@@ -1038,39 +1145,137 @@ class KitaLulus {
    */
     extractCV(page) {
         return __awaiter(this, void 0, void 0, function* () {
+            /*
             let filePath = "";
-            console.info("[CV] Clicking CV tab...");
-            yield page.getByRole('tab', { name: 'CV' }).click();
-            if ((yield page.locator("id=imgApplicantDetailCVEmptyState").count()) > 0) {
-                console.info("[CV] No CV uploaded for this applicant.");
-                return { filePath, filename: "", text: "", publicUrl: "", method: "" };
+            await this.dismissMarketingOverlay(page);
+        
+            const cvTab = page.getByRole('tab', { name: 'CV' });
+            if ((await cvTab.count()) > 0) {
+              console.info("[CV] Clicking CV tab...");
+              await cvTab.click();
+              await page.waitForTimeout(1000);
+        
+              if (await page.locator("id=imgApplicantDetailCVEmptyState").count() > 0) {
+                console.info("[CV] No CV uploaded on the CV tab.");
+              } else {
+                const cvDownloadButton = await this.findFirstVisibleLocator([
+                  page.locator('[data-test-id="btnApplicantDetailDownloadCV"]'),
+                  page.getByRole("button", { name: /Unduh CV/i }),
+                  page.getByText("Unduh CV", { exact: true }),
+                  page.locator("button").filter({ hasText: /Unduh CV/i }),
+                  page.locator("a").filter({ hasText: /Unduh CV/i }),
+                ], 5000);
+        
+                if (cvDownloadButton) {
+                  console.info("[CV] Found CV download button.");
+                  filePath = await this.captureFileFromPopupOrCurrentPage(page, cvDownloadButton, "CV");
+                } else {
+                  console.info("[CV] CV download button not present on CV tab.");
+                }
+              }
             }
-            console.info("[CV] Waiting for CV download button...");
-            yield this.checkLazyLoadedElement(page, '[data-test-id="btnApplicantDetailDownloadCV"]');
-            if ((yield page.locator('[data-test-id="btnApplicantDetailDownloadCV"]').count()) > 0) {
-                // Open a new page when the CV download button is clicked
-                const pagePromise = page.waitForEvent('popup');
-                yield page.locator('[data-test-id="btnApplicantDetailDownloadCV"]').click();
-                const newPage = yield pagePromise;
-                yield newPage.waitForLoadState();
-                // Get the URL of the downloaded CV
-                const cvURL = yield newPage.url();
-                // Fetch and store the CV
-                filePath = yield this.fetchAndStore(cvURL);
-                // Close the new page
-                yield newPage.close();
-            }
+        
             if (filePath === "") {
-                return { filePath, filename: "", text: "", publicUrl: "", method: "" };
+              const profileTab = page.getByRole('tab', { name: 'Profil' });
+              const profileDownloadButton = page.getByText('Unduh Profil', { exact: true });
+        
+              if ((await profileTab.count()) > 0) {
+                console.info("[CV] Trying Profil tab fallback...");
+                await profileTab.click();
+                await page.waitForTimeout(1000);
+              }
+        
+              if (await this.waitForLocatorVisible(profileDownloadButton, 3000)) {
+                console.info("[CV] Found 'Unduh Profil' fallback.");
+                filePath = await this.captureFileFromPopupOrCurrentPage(page, profileDownloadButton, "Profil");
+              }
             }
-            const extracted = yield this.extractTextFromCV(filePath);
+        
+            if (filePath === "") {
+              console.info("[CV] No downloadable CV/Profile document found for this applicant.");
+              return { filePath, filename: "", text: "", publicUrl: "", method: "" };
+            }
+        
+            const extracted = await this.extractTextFromCV(filePath);
             return {
-                filePath,
-                filename: path_1.default.basename(filePath),
-                text: extracted.text,
-                publicUrl: this.buildStoragePublicUrl(filePath),
-                method: extracted.method,
+              filePath,
+              filename: path.basename(filePath),
+              text: extracted.text,
+              publicUrl: this.buildStoragePublicUrl(filePath),
+              method: extracted.method,
             };
+            */
+            // CV/profile download is intentionally disabled for now.
+            // The scraper will only collect data visible in the applicant profile preview/detail.
+            console.info("[CV] Skipping CV/Profile download. Scraping profile preview data only.");
+            return { filePath: "", filename: "", text: "", publicUrl: "", method: "" };
+        });
+    }
+    waitForLocatorVisible(locator, timeoutMs) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const startedAt = Date.now();
+            while (Date.now() - startedAt < timeoutMs) {
+                try {
+                    if ((yield locator.count()) > 0 && (yield locator.first().isVisible())) {
+                        return true;
+                    }
+                }
+                catch (_a) {
+                    // Ignore transient DOM state while polling.
+                }
+                yield new Promise((resolve) => setTimeout(resolve, 250));
+            }
+            return false;
+        });
+    }
+    findFirstVisibleLocator(locators, timeoutMs) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const startedAt = Date.now();
+            while (Date.now() - startedAt < timeoutMs) {
+                for (const locator of locators) {
+                    try {
+                        if ((yield locator.count()) > 0 && (yield locator.first().isVisible())) {
+                            return locator.first();
+                        }
+                    }
+                    catch (_a) {
+                        // Ignore transient DOM state while polling.
+                    }
+                }
+                yield new Promise((resolve) => setTimeout(resolve, 250));
+            }
+            return null;
+        });
+    }
+    captureFileFromPopupOrCurrentPage(page, trigger, label) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const popupPromise = page.waitForEvent("popup", { timeout: 5000 }).catch(() => null);
+            const currentUrl = page.url();
+            yield trigger.click();
+            const popupPage = yield popupPromise;
+            if (popupPage) {
+                yield popupPage.waitForLoadState("domcontentloaded").catch(() => undefined);
+                const fileUrl = popupPage.url();
+                console.info(`[CV] ${label} opened in popup: ${fileUrl}`);
+                const filePath = yield this.fetchAndStore(fileUrl);
+                yield popupPage.close().catch(() => undefined);
+                return filePath;
+            }
+            yield page.waitForTimeout(1500);
+            const navigatedUrl = page.url();
+            if (navigatedUrl !== currentUrl && !navigatedUrl.includes("employer.kitalulus.com")) {
+                console.info(`[CV] ${label} opened in current page: ${navigatedUrl}`);
+                const filePath = yield this.fetchAndStore(navigatedUrl);
+                yield page.goBack({ waitUntil: "domcontentloaded" }).catch(() => undefined);
+                return filePath;
+            }
+            const href = yield trigger.getAttribute("href").catch(() => null);
+            if (href) {
+                const resolvedUrl = href.startsWith("http") ? href : new URL(href, page.url()).toString();
+                console.info(`[CV] ${label} resolved from href: ${resolvedUrl}`);
+                return yield this.fetchAndStore(resolvedUrl);
+            }
+            return "";
         });
     }
     /**
@@ -1196,7 +1401,7 @@ class KitaLulus {
                     'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
                 };
                 const contentType = String((_a = response.headers['content-type']) !== null && _a !== void 0 ? _a : '').split(";")[0];
-                const extension = (_b = mimeTypes[contentType]) !== null && _b !== void 0 ? _b : path_1.default.extname(new URL(imageUrl).pathname).replace(".", "") || "bin";
+                const extension = (_b = mimeTypes[contentType]) !== null && _b !== void 0 ? _b : (path_1.default.extname(new URL(imageUrl).pathname).replace(".", "") || "bin");
                 const filePath = path_1.default.join(__dirname, "../storage/", `${Date.now()}.${extension}`);
                 yield fs_1.default.promises.writeFile(filePath, response.data);
                 return filePath;
@@ -1239,7 +1444,9 @@ class KitaLulus {
         return __awaiter(this, void 0, void 0, function* () {
             try {
                 const buffer = yield fs_1.default.promises.readFile(filePath);
-                const parsed = yield (0, pdf_parse_1.default)(buffer);
+                const parser = new pdf_parse_1.PDFParse({ data: buffer });
+                const parsed = yield parser.getText();
+                yield parser.destroy();
                 return parsed.text.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
             }
             catch (error) {
