@@ -1,7 +1,9 @@
 import playwright from "playwright";
 import fs from "fs";
+import path from "path";
 import axios from "axios";
 import FormData from "form-data";
+import sqlite3 from "sqlite3";
 
 /**
  * Represents a cookie.
@@ -34,6 +36,7 @@ export interface SeekConfigJson {
   local_storage: LocalStorageItem[];
   limit: number;
   api_destination: string;
+  db_path: string;
 }
 
 /**
@@ -91,11 +94,13 @@ export class Seek {
   private COOKIES: Cookie[] = [];
   private LOCALSTORAGE: LocalStorageItem[] = [];
   private APIDESTINATION: string = "";
+  private DB_PATH: string = "";
+  private DB!: sqlite3.Database;
 
   /**
-   * Represents a Jooble object.
+   * Represents a Seek object.
    * @constructor
-   * @param {SeekConfigJson} config - The configuration object for Jooble.
+   * @param {SeekConfigJson} config - The configuration object for Seek.
    */
   constructor(config: SeekConfigJson) {
     this.HEADLESS = config.headless;
@@ -103,7 +108,55 @@ export class Seek {
     this.COOKIES = config.cookies;
     this.LOCALSTORAGE = config.local_storage;
     this.APIDESTINATION = config.api_destination;
+    this.DB_PATH = path.join(__dirname, config.db_path);
+    this.DB = new sqlite3.Database(this.DB_PATH);
     console.info("CONFIG SEEK LOADED");
+  }
+
+  async createDatabaseConnection(): Promise<sqlite3.Database> {
+    if (!fs.existsSync(this.DB_PATH)) {
+      fs.mkdirSync(path.dirname(this.DB_PATH), { recursive: true });
+      fs.writeFileSync(this.DB_PATH, "");
+    }
+    return new Promise((resolve, reject) => {
+      this.DB = new sqlite3.Database(this.DB_PATH, (err) => {
+        if (err) { reject(err); } else { resolve(this.DB); }
+      });
+    });
+  }
+
+  async createApplicantsTable(): Promise<void> {
+    const query = `CREATE TABLE IF NOT EXISTS applicants (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, data TEXT NOT NULL)`;
+    return new Promise((resolve, reject) => {
+      this.DB.run(query, (err) => { err ? reject(err) : resolve(); });
+    });
+  }
+
+  async isTableExist(tableName: string): Promise<boolean> {
+    const query = `SELECT name FROM sqlite_master WHERE type='table' AND name='${tableName}'`;
+    return new Promise((resolve, reject) => {
+      this.DB.get(query, (err, row) => { err ? reject(err) : resolve(row !== undefined); });
+    });
+  }
+
+  async createRequiredTables(): Promise<void> {
+    const exists = await this.isTableExist("applicants");
+    if (!exists) await this.createApplicantsTable();
+  }
+
+  async getApplicantByEmail(email: string): Promise<any> {
+    const query = `SELECT * FROM applicants WHERE email = '${email}'`;
+    return new Promise((resolve, reject) => {
+      this.DB.get(query, (err, row) => { err ? reject(err) : resolve(row); });
+    });
+  }
+
+  async insertApplicant(data: Applicant): Promise<void> {
+    const json = JSON.stringify(data).replace(/'/g, "''");
+    const query = `INSERT INTO applicants (email, data) VALUES ('${data.email}', '${json}')`;
+    return new Promise((resolve, reject) => {
+      this.DB.run(query, (err) => { err ? reject(err) : resolve(); });
+    });
   }
 
   /**
@@ -135,6 +188,8 @@ export class Seek {
       console.info("Error sending param", param);
       console.error("Error sending request with response:", (error as any).response.data);
     }
+
+    await this.insertApplicant(param);
   }
 
   async ExtractListVacancyPage(page: any): Promise<VacancyPage[]> {
@@ -186,6 +241,9 @@ export class Seek {
    * @returns A Promise that resolves when the scraping is complete.
    */
   async Scrape(): Promise<void> {
+    await this.createDatabaseConnection();
+    await this.createRequiredTables();
+
     const browser = await playwright.chromium.launch({
       headless: this.HEADLESS,
       slowMo: 5000,

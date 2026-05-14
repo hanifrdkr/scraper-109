@@ -799,7 +799,7 @@ export class KitaLulusV2 {
       'image/png': 'png',
     };
 
-    const contentType = response.headers['content-type'];
+    const contentType = String(response.headers['content-type'] ?? '');
     const extension = mimeTypes[contentType];
     const filePath = path.join(__dirname, "../storage/", `${Date.now()}.${extension}`);
 

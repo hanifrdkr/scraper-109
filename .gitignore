@@ -21,3 +21,11 @@ rad.json
 *.flf
 #Test results file
 TestResults.xml
+.playwright-mcp/
+cache/
+node-modules/
+node_modules/
+db/
+logs/
+db/
+

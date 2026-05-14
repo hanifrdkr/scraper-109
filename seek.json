@@ -205,5 +205,6 @@
     "limit": 2,
     "timeout": 60000,
     "slowmo": 10000,
-    "api_destination": "http://84.247.147.108:9012/api/v1/candidate"
+    "api_destination": "http://84.247.147.108:9012/api/v1/candidate",
+    "db_path": "../db/seek.db"
 }

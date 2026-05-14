@@ -1,132 +1,120 @@
-import express from "express";
-import { execSync, spawn, ChildProcess } from "child_process";
-import path from "path";
-
-const app = express();
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = __importDefault(require("express"));
+const child_process_1 = require("child_process");
+const path_1 = __importDefault(require("path"));
+const app = (0, express_1.default)();
 const PORT = 4000;
-app.use(express.json());
-
-const DB_DIR = path.join(__dirname, "../db");
-const ROOT_DIR = path.join(__dirname, "../");
-const TS_NODE = path.join(__dirname, "../node_modules/.bin/ts-node");
-const SERVER = path.join(__dirname, "server.ts");
-
+app.use(express_1.default.json());
+const DB_DIR = path_1.default.join(__dirname, "../db");
+const ROOT_DIR = path_1.default.join(__dirname, "../");
+const TS_NODE = path_1.default.join(__dirname, "../node_modules/.bin/ts-node");
+const SERVER = path_1.default.join(__dirname, "server.ts");
 const SCRAPERS = ["glints", "jooble", "seek", "pintarnya", "kitalulus"];
-
-type ScraperStatus = "idle" | "running" | "done" | "error";
-
-const scraperState: Record<string, { status: ScraperStatus; log: string[]; pid?: number }> = {};
-const scraperProcesses: Record<string, ChildProcess> = {};
-
-app.use("/storage", express.static(path.join(ROOT_DIR, "storage")));
-
+const scraperState = {};
+const scraperProcesses = {};
+app.use("/storage", express_1.default.static(path_1.default.join(ROOT_DIR, "storage")));
 for (const name of SCRAPERS) {
-  scraperState[name] = { status: "idle", log: [] };
+    scraperState[name] = { status: "idle", log: [] };
 }
-
-function runScraper(name: string) {
-  if (scraperState[name].status === "running") return;
-
-  scraperState[name] = { status: "running", log: [] };
-
-  const proc = spawn(TS_NODE, [SERVER, name], { cwd: ROOT_DIR });
-  scraperProcesses[name] = proc;
-  scraperState[name].pid = proc.pid;
-
-  const append = (data: Buffer) => {
-    const lines = data.toString().split("\n").filter(Boolean);
-    scraperState[name].log.push(...lines);
-    if (scraperState[name].log.length > 2000) {
-      scraperState[name].log = scraperState[name].log.slice(-2000);
+function runScraper(name) {
+    if (scraperState[name].status === "running")
+        return;
+    scraperState[name] = { status: "running", log: [] };
+    const proc = (0, child_process_1.spawn)(TS_NODE, [SERVER, name], { cwd: ROOT_DIR });
+    scraperProcesses[name] = proc;
+    scraperState[name].pid = proc.pid;
+    const append = (data) => {
+        const lines = data.toString().split("\n").filter(Boolean);
+        scraperState[name].log.push(...lines);
+        if (scraperState[name].log.length > 2000) {
+            scraperState[name].log = scraperState[name].log.slice(-2000);
+        }
+    };
+    proc.stdout.on("data", append);
+    proc.stderr.on("data", append);
+    proc.on("close", (code) => {
+        scraperState[name].status = code === 0 ? "done" : "error";
+        delete scraperProcesses[name];
+    });
+}
+function queryDB(dbFile, sql) {
+    try {
+        const dbPath = path_1.default.join(DB_DIR, dbFile);
+        const out = (0, child_process_1.execSync)(`sqlite3 -json "${dbPath}" "${sql}"`, { encoding: "utf-8" });
+        return out.trim() ? JSON.parse(out) : [];
     }
-  };
-
-  proc.stdout.on("data", append);
-  proc.stderr.on("data", append);
-
-  proc.on("close", (code) => {
-    scraperState[name].status = code === 0 ? "done" : "error";
-    delete scraperProcesses[name];
-  });
+    catch (_a) {
+        return [];
+    }
 }
-
-function queryDB(dbFile: string, sql: string): any[] {
-  try {
-    const dbPath = path.join(DB_DIR, dbFile);
-    const out = execSync(`sqlite3 -json "${dbPath}" "${sql}"`, { encoding: "utf-8" });
-    return out.trim() ? JSON.parse(out) : [];
-  } catch {
-    return [];
-  }
-}
-
 function getAllApplicants() {
-  const sources = [
-    { name: "glints", file: "glints.db" },
-    { name: "jooble", file: "jooble.db" },
-    { name: "kitalulus", file: "kitalulus.db" },
-    { name: "pintarnya", file: "pintarnya.db" },
-    { name: "seek", file: "seek.db" },
-  ];
-
-  const results: any[] = [];
-  for (const src of sources) {
-    const rows = queryDB(src.file, "SELECT id, email, data FROM applicants");
-    for (const row of rows) {
-      try {
-        const data = typeof row.data === "string" ? JSON.parse(row.data) : {};
-        results.push({ _source: src.name, _id: row.id, ...data });
-      } catch {
-        results.push({ _source: src.name, _id: row.id, email: row.email });
-      }
+    const sources = [
+        { name: "glints", file: "glints.db" },
+        { name: "jooble", file: "jooble.db" },
+        { name: "kitalulus", file: "kitalulus.db" },
+        { name: "pintarnya", file: "pintarnya.db" },
+        { name: "seek", file: "seek.db" },
+    ];
+    const results = [];
+    for (const src of sources) {
+        const rows = queryDB(src.file, "SELECT id, email, data FROM applicants");
+        for (const row of rows) {
+            try {
+                const data = typeof row.data === "string" ? JSON.parse(row.data) : {};
+                results.push(Object.assign({ _source: src.name, _id: row.id }, data));
+            }
+            catch (_a) {
+                results.push({ _source: src.name, _id: row.id, email: row.email });
+            }
+        }
     }
-  }
-  return results;
+    return results;
 }
-
 app.get("/api/applicants", (_req, res) => {
-  res.json(getAllApplicants());
+    res.json(getAllApplicants());
 });
-
 app.post("/api/scrape/:name", (req, res) => {
-  const { name } = req.params;
-  if (name === "all") {
-    for (const s of SCRAPERS) runScraper(s);
-    res.json({ started: SCRAPERS });
-  } else if (SCRAPERS.includes(name)) {
-    runScraper(name);
-    res.json({ started: name });
-  } else {
-    res.status(400).json({ error: "Unknown scraper" });
-  }
+    const { name } = req.params;
+    if (name === "all") {
+        for (const s of SCRAPERS)
+            runScraper(s);
+        res.json({ started: SCRAPERS });
+    }
+    else if (SCRAPERS.includes(name)) {
+        runScraper(name);
+        res.json({ started: name });
+    }
+    else {
+        res.status(400).json({ error: "Unknown scraper" });
+    }
 });
-
 // Returns summary status + last 30 lines per scraper (for polling)
 app.get("/api/scrape/status", (_req, res) => {
-  const out: Record<string, any> = {};
-  for (const name of SCRAPERS) {
-    const s = scraperState[name];
-    out[name] = { status: s.status, log: s.log.slice(-30) };
-  }
-  res.json(out);
+    const out = {};
+    for (const name of SCRAPERS) {
+        const s = scraperState[name];
+        out[name] = { status: s.status, log: s.log.slice(-30) };
+    }
+    res.json(out);
 });
-
 // Returns full log for a single scraper
 app.get("/api/scrape/logs/:name", (req, res) => {
-  const { name } = req.params;
-  if (!SCRAPERS.includes(name)) return res.status(400).json({ error: "Unknown scraper" });
-  const s = scraperState[name];
-  res.json({ status: s.status, log: s.log });
+    const { name } = req.params;
+    if (!SCRAPERS.includes(name))
+        return res.status(400).json({ error: "Unknown scraper" });
+    const s = scraperState[name];
+    res.json({ status: s.status, log: s.log });
 });
-
 app.get("/", (_req, res) => {
-  res.send(HTML);
+    res.send(HTML);
 });
-
 app.listen(PORT, () => {
-  console.log(`Viewer running at http://localhost:${PORT}`);
+    console.log(`Viewer running at http://localhost:${PORT}`);
 });
-
 const HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>

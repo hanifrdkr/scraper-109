@@ -430,20 +430,14 @@ export class Pintarnya {
     console.info("Creating required tables...");
     await this.createRequiredTables();
 
-    console.info("Scraping data from Pintarnya website");
+    console.info("[LOGIN] Launching browser...");
 
-    /**
-     * Launch the browser.
-     */
     const browser = await playwright.chromium.launch({
       headless: this.HEADLESS,
     });
     const page = await browser.newPage();
     page.setDefaultTimeout(this.TIMEOUT);
 
-    /**
-     * Block Request from Moengage
-     */
     const blacklist = ["clarity.ms", "moengage.com"];
     await page.route("**/*", (route) => {
       if (blacklist.some((url) => route.request().url().includes(url))) {
@@ -451,55 +445,42 @@ export class Pintarnya {
       } else {
         route.continue();
       }
-    })
+    });
 
-    /**
-     * Open login page
-     */
-    console.info(`Opening ${this.SIGN_IN_URL}...`);
+    console.info(`[LOGIN] Navigating to ${this.SIGN_IN_URL}...`);
     await page.goto(this.SIGN_IN_URL);
     await page.waitForLoadState("load");
 
-    /**
-     * Sign in to the website via email and password.
-     */
-    console.info("Signing in...");
+    console.info("[LOGIN] Waiting for submit button to appear...");
     await this.checkLazyLoadedElement(page, page.locator(this.SIGN_IN_SUBMIT_SELECTOR));
 
+    console.info("[LOGIN] Filling credentials...");
     await page.locator(this.SIGN_IN_EMAIL_SELECTOR).fill(this.EMAIL ?? "-");
     await page.locator(this.SIGN_IN_PASSWORD_SELECTOR).fill(this.PASSWORD ?? "-");
     await page.locator(this.SIGN_IN_SUBMIT_SELECTOR).click();
+    console.info("[LOGIN] Submitted. Waiting for redirect to job vacancy page...");
 
-    /**
-     * Wait for page to load.
-     */
-    console.info(`Waiting for ${this.JOB_VACANCY_URL}...`)
     await this.waitPageFromURL(page, this.JOB_VACANCY_URL);
     await page.waitForLoadState("load");
+    console.info("[LOGIN] Login successful.");
 
-    /**
-     * Close moengage modal
-     */
+    console.info("[VACANCY] Closing modals and fetching job list...");
     await this.errorCatcher(page);
 
-    /**
-     * Wait for the jobVacancy list container to be attached to the DOM.
-     */
+    console.info("[VACANCY] Scrolling to load all job vacancies...");
     const jobVacancyListContainer = await this.fetchingAllJobList(page);
 
-    /**
-     * Select all the jobVacancy list buttons.
-     */
-    console.log("Select all the jobVacancy list buttons...");
+    console.info("[VACANCY] Selecting job vacancy buttons...");
     await this.errorCatcher(page);
     const jobVacancyButton = await jobVacancyListContainer.locator("div#kandidat-btn").all();
 
     let jobVacancyList: JobVacancy[] = [];
     if (this.JOB_VACANCIES.length > 0) {
-      console.info("Found jobVacancies in the configuration. Using the configuration...");
+      console.info(`[VACANCY] Using ${this.JOB_VACANCIES.length} job(s) from config.`);
       jobVacancyList = this.JOB_VACANCIES;
     } else {
       jobVacancyList = await this.extractJobVacancy(jobVacancyButton);
+      console.info(`[VACANCY] Extracted ${jobVacancyList.length} job(s) from page.`);
     }
 
     /**
@@ -507,7 +488,7 @@ export class Pintarnya {
      */
     for (const jobVacancy of jobVacancyList) {
       console.info("=======================================================");
-      console.info(`Opening jobVacancy detail for ${jobVacancy.position}...`);
+      console.info(`[VACANCY] Processing: "${jobVacancy.position}" @ ${jobVacancy.location}`);
 
       let jobVacancyWrapper = null;
 
@@ -541,10 +522,8 @@ export class Pintarnya {
         }
       }
 
-      /**
-       * Throw an error if the jobVacancy is not found.
-       */
       if (jobVacancyWrapper === null) {
+        console.info(`[VACANCY] Not found on page: "${jobVacancy.position}" @ ${jobVacancy.location}. Skipping.`);
         throw new Error(`JobVacancy with position ${jobVacancy.position} and location ${jobVacancy.location} not found`);
       }
 
@@ -568,11 +547,10 @@ export class Pintarnya {
 
       console.log({ applicantCount });
 
-      /**
-       * Click the detail button
-       */
+      console.info(`[VACANCY] Opening candidates page (${applicantCount} total applicants)...`);
       await this.errorCatcher(page);
       await jobVacancyDetailButton.click();
+      console.info("[VACANCY] Waiting for candidate page to load (#filter-container)...");
       await this.waitCandidatePageReady(page);
       await page.waitForTimeout(10000);
 
@@ -607,19 +585,11 @@ export class Pintarnya {
       const applicantsOfJobVacancyInDatabase = await this.countApplicantByPintarnyaJobId(appliedForId);
       console.log({ applicantsOfJobVacancyInDatabase });
 
-      if (
-        jobVacancyInDatabase === undefined &&
-        appliedForId !== undefined
-      ) {
-        await this.insertJobVacancy(
-          jobVacancy.position,
-          jobVacancy.location,
-          appliedForId,
-          applicantCount,
-        );
+      if (jobVacancyInDatabase === undefined && appliedForId !== undefined) {
+        console.info(`[DB] New vacancy, inserting into local DB: "${jobVacancy.position}" (id: ${appliedForId})`);
+        await this.insertJobVacancy(jobVacancy.position, jobVacancy.location, appliedForId, applicantCount);
       } else {
-        console.info("JobVacancy already exists in the database...");
-
+        console.info(`[DB] Vacancy already in DB. DB applicants: ${jobVacancyInDatabase.applicants}, page applicants: ${applicantCount}, scraped: ${applicantsOfJobVacancyInDatabase}`);
         if (
           jobVacancy.position === jobVacancyInDatabase.position &&
           jobVacancy.location === jobVacancyInDatabase.location &&
@@ -627,8 +597,10 @@ export class Pintarnya {
           applicantCount === jobVacancyInDatabase.applicants &&
           jobVacancyInDatabase.applicants === applicantsOfJobVacancyInDatabase
         ) {
-          console.info("Data is the same. Moving to the next job...");
+          console.info("[SKIP] No new applicants since last run. Moving to next vacancy.");
           isScrappingCard = false;
+        } else {
+          console.info("[VACANCY] Applicant count changed, re-scraping...");
         }
       }
 
@@ -673,9 +645,8 @@ export class Pintarnya {
         }
 
         try {
-
           console.info("-------------------------------------------------------");
-          console.info(`Scraping candidate card ${nthCard + 1}...`);
+          console.info(`[CANDIDATE] Scraping card #${nthCard + 1}...`);
 
           const cardSelector = `div[id="candidate-card-${nthCard + 1}"]`;
           await this.errorCatcher(page);
@@ -735,10 +706,10 @@ export class Pintarnya {
             .nth(0)
             .textContent();
 
-          const candidateAge = candidateAgeAndLocation?.split("•")[0].trim();
+          const candidateAge = candidateAgeAndLocation?.split("•")[0]?.trim();
           console.log("Candidate age:", candidateAge);
 
-          const candidateLocation = candidateAgeAndLocation?.split("•")[1].trim();
+          const candidateLocation = candidateAgeAndLocation?.split("•")[1]?.trim();
           console.log("Candidate location:", candidateLocation);
 
           /**
@@ -780,23 +751,21 @@ export class Pintarnya {
            * If exist, skip the data
            * If not exist, insert the data
            */
-          const applicantInDatabase = await this.getApplicantByEmail(candidateEmail || "");
+          console.info(`[CANDIDATE] Name: ${candidateName}, Email: ${candidateEmail || "(none)"}`);
 
+          const applicantInDatabase = await this.getApplicantByEmail(candidateEmail || "");
           if (
             applicantInDatabase !== undefined &&
             applicantInDatabase.email === candidateEmail &&
             applicantInDatabase.applied_for_id === appliedForId
           ) {
-            console.info("Applicant already exists in the database. Skipping...");
+            console.info("[SKIP] Already in local DB, skipping.");
             this.SKIPPED_APPLICANT_BY_DATABASE++;
             nthCard++;
             continue;
           }
 
-          /**
-           * Click the candidate phone button.
-           * This will show the candidate phone number.
-           */
+          console.info("[PHONE] Clicking phone reveal button...");
           await this.errorCatcher(page);
           const candidatePhoneButton = candidateCardDetail
             .locator("div.justify-start")
@@ -805,6 +774,7 @@ export class Pintarnya {
             .nth(1);
           await candidatePhoneButton.click();
 
+          console.info("[PHONE] Waiting for 'Kontak Kandidat' modal...");
           const candidatePhoneModal = page
             .locator("div")
             .filter({ hasText: /^Kontak Kandidat$/ });
@@ -817,13 +787,9 @@ export class Pintarnya {
             .nth(2)
             .textContent();
 
-          /**
-           * Close the candidate phone modal.
-           */
+          console.info(`[PHONE] Phone: ${candidatePhone || "(none)"}`);
           await this.errorCatcher(page);
           await candidatePhoneModal.locator("img").click();
-
-          console.log("Candidate phone:", candidatePhone);
 
           /**
            * Get the candidate latest salary.
@@ -943,10 +909,7 @@ export class Pintarnya {
           const photoFile = photo ? await this.urlToFile(photoUrl, `${candidateName}.webp`) : null;
           console.log("Photo:", photo);
 
-          /**
-           * Get the candidate CV
-           */
-          console.log("Checking CV...");
+          console.info("[CV] Checking for CV...");
           await this.errorCatcher(page);
           const downloadCVPromise = page.waitForEvent("download");
 
@@ -1077,29 +1040,28 @@ export class Pintarnya {
    */
   async scrollToFetchAllJobList(page: playwright.Page): Promise<void> {
     const NO_VACANCY_TEXT = "Belum ada lowongan kerja";
-    console.info(
-      'Scrolling until "Semua lowongan kerja sudah di tampilkan" is visible...'
-    );
+    console.info('[VACANCY] Scrolling until "Semua lowongan kerja sudah di tampilkan" is visible...');
+    let scrollCount = 0;
     while (
-      !(await page
-        .getByText("Semua lowongan kerja sudah di tampilkan")
-        .isVisible())
+      !(await page.getByText("Semua lowongan kerja sudah di tampilkan").isVisible())
     ) {
       await this.errorCatcher(page);
 
       if (await page.getByText(NO_VACANCY_TEXT).isVisible()) {
-        console.info("No jobVacancy found. Exiting...");
+        console.info("[VACANCY] No vacancies found. Exiting.");
         process.exit(0);
       }
 
+      scrollCount++;
+      if (scrollCount % 5 === 0) {
+        console.info(`[VACANCY] Still scrolling to load all vacancies... (scroll ${scrollCount})`);
+      }
+
       await page.evaluate(() => {
-        /**
-         * Scrolling to get more jobVacancy list
-         */
-        console.info("Scrolling to get more jobVacancy list...");
         window.scrollBy(0, window.innerHeight);
       });
     }
+    console.info(`[VACANCY] All vacancies loaded after ${scrollCount} scrolls.`);
   }
 
   /**
@@ -1226,7 +1188,10 @@ export class Pintarnya {
    * @param {string} filename The filename of the file.
    * @returns {Promise<File>} A promise that resolves with the File object.
    */
-  async urlToFile(url: string, filename: string): Promise<File> {
+  async urlToFile(url: string, filename: string, retryCount: number = 0): Promise<File | null> {
+    if (!url || url === "-") {
+      return null;
+    }
 
     try {
       const response = await fetch(url);
@@ -1235,10 +1200,13 @@ export class Pintarnya {
         type: blob.type,
       });
     } catch (error) {
-      console.log("request again")
-      return this.urlToFile(url, filename)
+      if (retryCount < this.MAX_RETRY) {
+        console.log("urlToFile failed, retrying...");
+        return this.urlToFile(url, filename, retryCount + 1);
+      }
+      console.error("urlToFile failed after retries:", error);
+      return null;
     }
-
   }
 
   /**
@@ -1383,11 +1351,12 @@ export class Pintarnya {
    * @returns A Promise that resolves when the request is sent successfully.
    */
   async sendRequest(param: Applicant): Promise<void> {
-    if (param.email === "") {
-      console.info("Skipping applicant with no email...");
+    if (param.contact.contact_number === "") {
+      console.info(`[SKIP] "${param.fullname}" has no phone number. Not sending to API.`);
       return;
     }
 
+    console.info(`[API] Sending "${param.fullname}" (${param.contact.contact_number}) to ${this.API_DESTINATION}...`);
     try {
       const bodyFormData = new FormData();
       bodyFormData.append("channel", param.channel);
@@ -1421,19 +1390,10 @@ export class Pintarnya {
       });
 
 
-      console.info("Success sending param", param);
-
-      /**
-       * Insert the applicant into the database.
-       */
-      console.info("Inserting applicant into the database...");
-      await this.insertApplicant(param.email, param.applied_for_id);
-
-      console.info("Incrementing the collected applicant count...")
-      this.COLLECTED_APPLICANT++;
+      console.info(`[API] Success: "${param.fullname}" sent.`);
     } catch (error) {
       const curl = `curl --location --globoff ${this.API_DESTINATION} --form 'channel=${param.channel}' --form 'type=${param.type}' --form 'applied_for=${param.applied_for}' --form 'applied_for_id=${param.applied_for_id}' --form 'applied_date=${param.applied_date}' --form 'email=${param.email}' --form 'fullname=${param.fullname}' --form 'nickname=${param.nickname}' --form 'photo=${param.photo}' --form 'date_of_birth=${param.date_of_birth}' --form 'age=${param.age}' --form 'contact=${JSON.stringify(param.contact)}' --form 'summary=${param.summary}' --form 'latest_salary=${param.latest_salary}' --form 'salary_expectation=${param.salary_expectation}' --form 'work_experiences=${JSON.stringify(param.work_experiences)}' --form 'educations=${JSON.stringify(param.educations)}' --form 'skills=${JSON.stringify(param.skills)}' --form 'location=${param.location}' --form 'cv=${param.cv}' --form 'reference_links=${JSON.stringify(param.reference_links)}'`;
-      console.info("Error sending param", param, curl);
+      console.error(`[ERROR] API failed for "${param.fullname}". curl:`, curl);
 
       let errorResponse = null
 
@@ -1453,6 +1413,11 @@ export class Pintarnya {
         }
       ]
     }
+
+    console.info("[DB] Inserting applicant into local DB...");
+    await this.insertApplicant(param.email, param.applied_for_id, param);
+    this.COLLECTED_APPLICANT++;
+    console.info(`[DB] Inserted. Total collected so far: ${this.COLLECTED_APPLICANT}`);
   }
 
   /**
@@ -1534,11 +1499,12 @@ export class Pintarnya {
       CREATE TABLE IF NOT EXISTS applicants (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email TEXT NOT NULL,
-        applied_for_id TEXT NOT NULL
+        applied_for_id TEXT NOT NULL,
+        data TEXT
       )
     `;
 
-    new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       this.DB.run(createTableQuery, (err) => {
         if (err) {
           console.error("Error creating applicants table", err.message);
@@ -1587,6 +1553,11 @@ export class Pintarnya {
     if (!isTableApplicantsExist) {
       console.info("Creating applicants table...");
       await this.createApplicantsTable();
+    } else {
+      // Migrate existing table to add data column if missing
+      await new Promise<void>((resolve) => {
+        this.DB.run('ALTER TABLE applicants ADD COLUMN data TEXT', () => resolve());
+      });
     }
   }
 
@@ -1679,12 +1650,29 @@ export class Pintarnya {
    * @example insertApplicant("johndoe@mail.app", "283020")
    * @returns Promise<void>
    */
-  async insertApplicant(email: string, appliedForId: string): Promise<void> {
+  async insertApplicant(email: string, appliedForId: string, param: Applicant): Promise<void> {
     console.info(`Inserting applicant ${email} into the database...`);
 
+    const normalized = {
+      name: param.fullname,
+      email: param.email,
+      applied_for: param.applied_for,
+      applied_date: param.applied_date,
+      portal: 'pintarnya',
+      gender: param.gender,
+      location: param.location,
+      salary_expectation: param.salary_expectation,
+      work_experience: param.work_experiences,
+      education: param.educations,
+      skill: param.skills,
+      contact: param.contact,
+      date_of_birth: param.date_of_birth,
+    };
+    const data = JSON.stringify(normalized).replace(/'/g, "''");
+
     const insertQuery = `
-      INSERT INTO applicants (email, applied_for_id)
-      VALUES ('${email}', '${appliedForId}')
+      INSERT INTO applicants (email, applied_for_id, data)
+      VALUES ('${email}', '${appliedForId}', '${data}')
     `;
 
     return new Promise((resolve, reject) => {
@@ -1708,8 +1696,9 @@ export class Pintarnya {
   async getApplicantByEmail(email: string): Promise<ApplicantDB> {
     console.info(`Getting applicant by email ${email}...`);
 
+    const safeEmail = email.replace(/'/g, "''");
     const selectQuery = `
-      SELECT * FROM applicants WHERE email = '${email}'
+      SELECT * FROM applicants WHERE email = '${safeEmail}'
     `;
 
     return new Promise((resolve, reject) => {

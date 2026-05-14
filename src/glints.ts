@@ -326,7 +326,14 @@ export class Glints {
       fs.mkdirSync(this.CACHE_DIR);
     }
 
-    const page = await browser.newPage();
+    const context = browser.contexts()[0] || await browser.newContext({
+      viewport: { width: 1440, height: 900 }
+    });
+    await context.addCookies(this.COOKIES);
+    context.setDefaultTimeout(this.TIMEOUT);
+
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1440, height: 900 });
     page.setDefaultTimeout(this.TIMEOUT)
     await page.route('**/*', async (route, request) => {
       if (
@@ -382,19 +389,38 @@ export class Glints {
     const loadTime = Date.now() - startTime;
     console.info(`Page loaded in ${loadTime}ms`);
 
-    const context = await browser.newContext();
-    await context.addCookies(this.COOKIES);
-    context.setDefaultTimeout(this.TIMEOUT);
-
     await page.evaluate((localStorageData) => {
       for (const i of localStorageData) {
         localStorage.setItem(i.key, i.value);
       }
+      // Suppress mobile app promo page
+      localStorage.setItem('mobileAppPromptViewedDate', JSON.stringify(new Date().toISOString()));
     }, this.LOCALSTORAGE);
 
-    await page.waitForTimeout(10000);
+    await page.waitForTimeout(5000);
 
     await page.goto("https://employers.glints.id/dashboard");
+
+    await page.waitForTimeout(3000);
+
+    // Suppress VIP expired modal via localStorage, then dismiss if already shown
+    await page.evaluate(() => {
+      const app = JSON.parse(localStorage.getItem('glintsEmployersApp') || '{}');
+      const companyId = app?.session?.data?.company?.id;
+      if (companyId) {
+        localStorage.setItem('vipMembershipExpiredModalHasSeen', JSON.stringify({ [companyId]: true }));
+      }
+    });
+    if (await page.locator('[data-testid="modal-close-btn"]').count() > 0) {
+      await page.locator('[data-testid="modal-close-btn"]').click();
+      await page.waitForTimeout(500);
+    }
+
+    // Dashboard defaults to "Aktif" tab — switch to "Semua Loker" to see all jobs
+    if (await page.locator('button:has-text("Semua Loker")').count() > 0) {
+      await page.locator('button:has-text("Semua Loker")').first().click();
+      await page.waitForTimeout(1000);
+    }
 
     await this.checkLazyLoadedElement(page, '[data-cy="job-card-listed"]')
 
@@ -407,15 +433,19 @@ export class Glints {
 
       await page.goto(it.link);
 
-      await this.checkLazyLoadedElement(page, '.Polaris-IndexTable__TableRow')
+      await page.waitForTimeout(2000);
 
       await page.click('#IN_REVIEW');
 
-      if (await page.locator('.empty-state-title').count() > 0) {
+      await page.waitForTimeout(2000);
+
+      // Skip job if no candidates in this stage
+      if (await page.locator('.Polaris-IndexTable__EmptySearchResultWrapper').count() > 0) {
         continue;
       }
-
-      await this.checkLazyLoadedElement(page, '.Polaris-IndexTable__TableRow')
+      if (await page.locator('.Polaris-IndexTable__TableRow').count() === 0) {
+        continue;
+      }
 
       let isNext = true;
       do {
@@ -424,7 +454,7 @@ export class Glints {
         // Check for lazy-loaded elements before proceeding
         await this.checkLazyLoadedElement(page, '.Polaris-IndexTable__TableRow');
 
-        if (await page.getByText("Belum ada pelamar di tahap dalam komunikasi", { exact: true }).count() > 0) {
+        if (await page.locator('.Polaris-IndexTable__EmptySearchResultWrapper').count() > 0) {
           break;
         }
 
@@ -1194,7 +1224,7 @@ async convertDateMMDDToYYYY(text: string): Promise<string> {
       };
 
       // Get the content type of the response
-      const contentType = response.headers['content-type'];
+      const contentType = String(response.headers['content-type'] ?? '');
 
       // Get the file extension based on the content type
       const extension = mimeTypes[contentType];

@@ -1,9 +1,11 @@
 import playwright from "playwright";
 import fs from "fs";
 import path from "path";
+import { execFileSync } from "child_process";
 import FormData from "form-data";
 import axios from "axios";
 import sqlite3 from 'sqlite3';
+import pdfParse from "pdf-parse";
 
 export interface KitaLulusConfigJson {
   headless: boolean;
@@ -40,6 +42,10 @@ type Applicant = {
   location: string;
   photo: string;
   cv: string;
+  cv_filename: string;
+  cv_text: string;
+  cv_url: string;
+  cv_ocr_method: string;
   gender: string;
   reference_link: ReferenceLink[];
   page_url?: string;
@@ -113,6 +119,8 @@ export class KitaLulus {
   private readonly SIGN_IN_SUBMIT_SELECTOR: string = '[data-test-id="btnSignInSubmit"]';
 
   private readonly APPLICANT_TABLE_ITEM_NAME_SELECTOR: string = '[data-test-id="lbApplicantTableItemName[0]"]';
+  private readonly APPLICANT_TABLE_ROW_SELECTOR: string = "table tbody tr";
+  private readonly APPLICANT_LIST_NEXT_BUTTON_SELECTOR: string = '//html/body/div[1]/div[2]/div[2]/div[2]/div/main/div[1]/div[3]/div[3]/div/div[5]/div/div/div/div[3]/button[2]';
   private readonly APPLICANT_DETAIL_NAME_SELECTOR: string = '[data-text-id="lbApplicantDetailName"]';
   private readonly APPLICANT_DETAIL_AGE_SELECTOR: string = '[data-text-id="lbApplicantDetailAge"]';
   private readonly APPLICANT_DETAIL_ABOUT_SELECTOR: string = '[data-test-id="lbApplicationDetailAbout"]';
@@ -168,6 +176,7 @@ export class KitaLulus {
    * @returns A Promise that resolves to void.
    */
   async sendRequest(param: Applicant): Promise<void> {
+    console.info(`[API] Sending "${param.name}" to ${this.APIDESTINATION}...`);
     try {
       const bodyFormData = new FormData();
       bodyFormData.append("channel", param.portal);
@@ -209,14 +218,15 @@ export class KitaLulus {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      console.info("Success sending param", param);
-      await this.insertApplicant(param);
-      this.COLLECTED++;
+      console.info(`[API] Success for "${param.name}".`);
     } catch (error) {
-      console.info("Error sending param", param);
-      console.error("Error sending request with error:", error);
-      console.error("Error sending request with response:", (error as any).response.data);
+      console.error(`[ERROR] API request failed for "${param.name}":`, error);
     }
+
+    console.info("[DB] Inserting applicant into local DB...");
+    await this.insertApplicant(param);
+    this.COLLECTED++;
+    console.info(`[DB] Inserted. Total collected so far: ${this.COLLECTED}`);
   }
 
   /**
@@ -276,10 +286,10 @@ export class KitaLulus {
         const recomendation = vacancy.getByRole("link", { name: /.*Lihat Rekomendasi Kandidat$/ });
         const linkRecommendation = await recomendation.getAttribute("href");
         
-        if (totalPending == 0){
+        if (Number(totalPending) === 0){
           console.info(`Skipped vacancy ${title} because 0 pending`);
           continue;
-        } 
+        }
 
         listVacancyPage.push({
           title: String(title),
@@ -566,100 +576,119 @@ export class KitaLulus {
    * @returns {Promise<void>} A promise that resolves when the scraping is complete.
    */
   async Scrape(): Promise<void> {
+    let browser: playwright.Browser | null = null;
     try {
       this.DB = await this.createDatabaseConnection();
-
       console.info("Creating required tables...");
       await this.createRequiredTables();
     } catch (error) {
       console.error(error);
       console.log("Failed to create database connection. Exiting...");
+      return;
     }
-    const browser = await playwright.chromium.launch({
-      headless: this.HEADLESS,
-      slowMo: this.SLOWMO,
-    });
-    const page = await browser.newPage();
-    page.setDefaultTimeout(this.TIMEOUT);
 
-    let listVacancyPage: VacancyPage[] = [];
-    try {  
+    try {
+      browser = await playwright.chromium.launch({
+        headless: this.HEADLESS,
+        slowMo: this.SLOWMO,
+      });
+      const page = await browser.newPage();
+      page.setDefaultTimeout(this.TIMEOUT);
+
+      console.info("[LOGIN] Navigating to signin page...");
       await page.goto("https://employer.kitalulus.com/auth/signin");
-      console.info("Open login page ....");
-  
-      // login page
+
+      console.info("[LOGIN] Filling credentials...");
       await page.locator(this.SIGN_IN_EMAIL_SELECTOR).fill(this.EMAIL ?? "");
       await page.locator(this.SIGN_IN_PASSWORD_SELECTOR).fill(this.PASSWORD ?? "");
       await page.locator(this.SIGN_IN_SUBMIT_SELECTOR).click();
-      console.info("Do login ....");
-  
+      console.info("[LOGIN] Submitted, waiting for dashboard...");
+
+      console.info("[TOOLTIP] Handling dashboard tooltips...");
       await this.tooltipsDashbaord(page);
-  
-      // go to Lowongan page
-      await page.locator('[data-test-id="mnDashboardSidebar[1]"]').click();
-      console.info("Do open page lowongan ....");
-  
-      await this.tooltipsLowongan(page);
-  
-      listVacancyPage = await this.ExtractListVacancyPage(page);
-      
-      console.info("Finish fetch all vacancy page ....");
-    } catch (error) {
-      console.error(error);
-      console.info("Failed fetch all vacancy page, please retry again ....");
-      process.exit();
-    }
+      console.info("[TOOLTIP] Dashboard tooltips done.");
 
-    for (const it of listVacancyPage) {
-      if (this.COLLECTED == this.LIMIT) {
-        break;
-      }
-      await page.goto(it.link);
-      console.info(`Do open ${it.link} ....`);
+      console.info("[NAV] Navigating to Pelamar (applicants) page...");
+      await page.locator('[data-test-id="mnDashboardSidebar[2]"]').click();
+
+      console.info("[TOOLTIP] Handling pelamar page tooltips...");
+      await this.tooltipsPelamar(page);
+      console.info("[TOOLTIP] Pelamar tooltips done.");
 
       await this.removeButtonOK(page);
+      await this.removeAllFilterApplicant(page);
 
-      await this.checkLazyLoadedElement(page, this.APPLICANT_TABLE_ITEM_NAME_SELECTOR);
+      let pageNumber = 1;
+      let hasNextPage = true;
+      while (hasNextPage) {
+        if (this.LIMIT > 0 && this.COLLECTED >= this.LIMIT) {
+          console.info(`[DONE] Limit ${this.LIMIT} reached. Stopping.`);
+          break;
+        }
 
-      if (await page.locator(this.APPLICANT_TABLE_ITEM_NAME_SELECTOR).count() == 0) {
-        continue;
-      }
+        console.info(`[CANDIDATE] Loading applicant page ${pageNumber}...`);
+        await this.checkLazyLoadedElement(page, this.APPLICANT_TABLE_ROW_SELECTOR);
 
-      await this.removeButtonOK(page);
+        const rows = page.locator(this.APPLICANT_TABLE_ROW_SELECTOR);
+        const rowCount = await rows.count();
+        console.info(`[CANDIDATE] Found ${rowCount} row(s) on applicant page ${pageNumber}.`);
 
-      await page.locator(this.APPLICANT_TABLE_ITEM_NAME_SELECTOR).click();
+        if (rowCount === 0) {
+          console.info("[CANDIDATE] No applicant rows visible. Stopping.");
+          break;
+        }
 
-      const waitPage = page.waitForEvent("popup");
-      await page.getByRole("button", { name: "Lihat detail" }).click();
-      const page1 = await waitPage;
-      page1.setDefaultTimeout(this.TIMEOUT);
-      console.info("Do Lihat detail ....");
+        for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+          if (this.LIMIT > 0 && this.COLLECTED >= this.LIMIT) {
+            console.info(`[DONE] Limit ${this.LIMIT} reached. Stopping.`);
+            break;
+          }
 
-      let isNextApplicant = true;
-      do {
-        try {
-          const applicant = await this.scrapeApplicantDetails("applicant", page1, it.title,);
+          const row = rows.nth(rowIndex);
+          const appliedFor = await this.extractAppliedForFromRow(row);
+          console.info(`[CANDIDATE] Opening row ${rowIndex + 1}/${rowCount}${appliedFor ? ` for "${appliedFor}"` : ""}...`);
 
-          if (applicant.email === "") {
-            isNextApplicant = await this.nextPage(page1);
-            continue;
-          } else {
+          let detailPage: playwright.Page | null = null;
+          try {
+            detailPage = await this.openApplicantDetailPage(page, rowIndex);
+            console.info("[CANDIDATE] Detail page opened.");
+
+            const applicant = await this.scrapeApplicantDetails("applicant", detailPage, appliedFor);
+
+            if (applicant.whatapps.contact_number === "") {
+              console.info("[SKIP] No phone number or already in DB. Skipping send.");
+              continue;
+            }
+
+            console.info(`[CANDIDATE] Name: "${applicant.name}", Phone: ${applicant.whatapps.contact_number}`);
             await this.sendRequest(applicant);
 
+            // Keep CV files on disk so the viewer can link directly to the saved document.
             await this.RemoveTempFile(applicant.photo);
-            await this.RemoveTempFile(applicant.cv);
-
-            console.info("collected :", this.COLLECTED);
-            isNextApplicant = await this.nextPage(page1);
+          } catch (error) {
+            console.error(`[ERROR] Failed to process applicant row ${rowIndex + 1}:`, error);
+          } finally {
+            if (detailPage && !detailPage.isClosed()) {
+              await detailPage.close();
+            }
           }
-        } catch (error) {
-          console.error(error);
-          isNextApplicant = await this.nextPage(page1);
         }
-      } while (isNextApplicant && this.COLLECTED < this.LIMIT);
+
+        hasNextPage = await this.nextApplicantListPage(page);
+        if (hasNextPage) {
+          pageNumber++;
+        }
+      }
+
+      console.info(`[DONE] Pelamar scraping finished. Total collected: ${this.COLLECTED}`);
+    } catch (error) {
+      console.error("[ERROR] Kitalulus scrape failed:", error);
+    } finally {
+      if (browser) {
+        await browser.close();
+      }
+      await this.closeDatabaseConnection();
     }
-    console.log("DONE");
-    process.exit();
   }
 
   /**
@@ -722,24 +751,140 @@ export class KitaLulus {
     }
   }
 
-  async tooltipsDashbaord(page: any): Promise<void> {
-    // tooltips dashboard
-    for (let i = 0; i < 3; i++) {
-      await page.getByRole("button", { name: "Lanjut" }).click();
-      console.info("Do lanjut ....");
+  async removeAllFilterApplicant(page: playwright.Page): Promise<void> {
+    try {
+      console.info("[CANDIDATE] Clearing applicant filters...");
+      const buttonFilter = page.locator('//html/body/div[1]/div[2]/div[2]/div[2]/div/main/div[1]/div[3]/div[3]/div/div[3]/div[2]/div/div[2]/button[1]');
+      if ((await buttonFilter.count()) === 0) {
+        console.info("[CANDIDATE] Filter button not found. Leaving filters as-is.");
+        return;
+      }
+
+      await buttonFilter.click();
+      await page.waitForTimeout(1000);
+
+      const buttonSwitchFilter = page.locator('//html/body/div[2]/div[3]/div/form/div[2]/div[1]/span/span[1]');
+      if ((await buttonSwitchFilter.count()) > 0) {
+        await buttonSwitchFilter.click();
+        console.info("[CANDIDATE] Disabled filter switch.");
+      }
+
+      const buttonSubmitFilter = page.locator('//html/body/div[2]/div[3]/div/form/div[3]/button[2]');
+      if ((await buttonSubmitFilter.count()) > 0) {
+        await buttonSubmitFilter.click();
+        console.info("[CANDIDATE] Applied applicant filter changes.");
+      } else {
+        await page.keyboard.press("Escape");
+      }
+    } catch (error) {
+      console.error("[WARN] Failed to adjust applicant filters:", error);
+      try {
+        await page.keyboard.press("Escape");
+      } catch {
+        // Ignore overlay close errors here.
+      }
     }
-    await page.getByRole("button", { name: "OK" }).click();
-    console.info("Do OK ....");
   }
 
-  async tooltipsLowongan(page: any): Promise<void> {
-    // tooltips menu lowongan page
-    await page.getByRole("button", { name: "Lanjut" }).click();
-    console.info("Do lanjut ....");
-    await page.getByRole("button", { name: "Lanjut" }).click();
-    console.info("Do lanjut ....");
-    await page.getByRole("button", { name: "SELESAI" }).click();
-    console.info("Do selesai ....");
+  async openApplicantDetailPage(page: playwright.Page, rowIndex: number): Promise<playwright.Page> {
+    const row = page.locator(this.APPLICANT_TABLE_ROW_SELECTOR).nth(rowIndex);
+    await row.click();
+    await page.waitForTimeout(500);
+
+    const detailButton = page.getByRole("button", { name: "Lihat detail" });
+    await detailButton.waitFor({ state: "visible", timeout: this.TIMEOUT });
+
+    const popupPromise = page.waitForEvent("popup");
+    await detailButton.click();
+    const detailPage = await popupPromise;
+    detailPage.setDefaultTimeout(this.TIMEOUT);
+    await detailPage.waitForLoadState("domcontentloaded");
+
+    return detailPage;
+  }
+
+  async nextApplicantListPage(page: playwright.Page): Promise<boolean> {
+    try {
+      const nextButton = page.locator(this.APPLICANT_LIST_NEXT_BUTTON_SELECTOR);
+      if ((await nextButton.count()) === 0) {
+        console.info("[NAV] Applicant list next-page button not found. Assuming last page.");
+        return false;
+      }
+
+      const isDisabled = await nextButton.isDisabled();
+      if (isDisabled) {
+        console.info("[NAV] Reached last applicant list page.");
+        return false;
+      }
+
+      console.info("[NAV] Moving to next applicant list page...");
+      await nextButton.click();
+      await page.waitForTimeout(1500);
+      return true;
+    } catch (error) {
+      console.error("[ERROR] Failed to paginate applicant list:", error);
+      return false;
+    }
+  }
+
+  async extractAppliedForFromRow(row: playwright.Locator): Promise<string> {
+    try {
+      const texts = (await row.locator("td").allTextContents())
+        .map((item) => item.replace(/\s+/g, " ").trim())
+        .filter(Boolean);
+
+      const blacklist = [
+        /^lihat detail$/i,
+        /^belum diproses$/i,
+        /^diproses$/i,
+        /^ditolak$/i,
+        /^diterima$/i,
+        /^\d+$/,
+        /^\d{4}-\d{2}-\d{2}$/,
+      ];
+
+      for (const value of texts) {
+        if (value.length < 4) {
+          continue;
+        }
+        if (blacklist.some((pattern) => pattern.test(value))) {
+          continue;
+        }
+        return value;
+      }
+    } catch (error) {
+      console.error("[WARN] Failed to derive applied_for from applicant row:", error);
+    }
+
+    return "Pelamar KitaLulus";
+  }
+
+  async tooltipsDashbaord(page: any): Promise<void> {
+    // tooltips dashboard — may already be dismissed for returning users
+    for (let i = 0; i < 3; i++) {
+      if (await page.getByRole("button", { name: "Lanjut" }).count() > 0) {
+        await page.getByRole("button", { name: "Lanjut" }).click();
+        console.info("Do lanjut ....");
+      }
+    }
+    if (await page.getByRole("button", { name: "OK" }).count() > 0) {
+      await page.getByRole("button", { name: "OK" }).click();
+      console.info("Do OK ....");
+    }
+  }
+
+  async tooltipsPelamar(page: any): Promise<void> {
+    // All tooltip buttons are conditional — returning users will have dismissed them already
+    for (let i = 0; i < 2; i++) {
+      if (await page.getByRole("button", { name: "Lanjut" }).count() > 0) {
+        await page.getByRole("button", { name: "Lanjut" }).click();
+        console.info("Do lanjut ....");
+      }
+    }
+    if (await page.getByRole("button", { name: "SELESAI" }).count() > 0) {
+      await page.getByRole("button", { name: "SELESAI" }).click();
+      console.info("Do selesai ....");
+    }
     if (await page.getByRole("button", { name: "OK" }).count() > 0) {
       await page.getByRole("button", { name: "OK" }).click();
       console.info("Do OK ....");
@@ -866,6 +1011,10 @@ export class KitaLulus {
         skill: [],
         location: "",
         photo: "",
+        cv_filename: "",
+        cv_text: "",
+        cv_url: "",
+        cv_ocr_method: "",
         gender: "",
         reference_link: [],
         cv: "",
@@ -873,10 +1022,13 @@ export class KitaLulus {
       }
     }
 
+    const cvDetails = await this.extractCV(page);
+    const appliedFor = vacancyPageTitle || "Pelamar KitaLulus";
+
     const applicant: Applicant = {
       portal: "kita_lulus",
       type: type,
-      applied_for: vacancyPageTitle,
+      applied_for: appliedFor,
       applied_date: await this.extractAppliedDate(page),
       name: await this.extractName(page),
       nick_name: await this.extractNickName(page),
@@ -891,9 +1043,13 @@ export class KitaLulus {
       skill: await this.extractSkills(page),
       location: await this.extractLocation(page),
       photo: await this.extractAvatar(page),
+      cv_filename: cvDetails.filename,
+      cv_text: cvDetails.text,
+      cv_url: cvDetails.publicUrl,
+      cv_ocr_method: cvDetails.method,
       gender: await this.extractGender(page),
       reference_link: await this.extractReferenceLink(page),
-      cv: await this.extractCV(page),
+      cv: cvDetails.filePath,
       page_url: await page.url(),
     };
 
@@ -1013,21 +1169,20 @@ export class KitaLulus {
  * @returns A promise that resolves to the file path of the stored CV image.
  *          If the CV URL is not found or an error occurs during fetching or storing, an empty string is returned.
  */
-  async extractCV(page: any): Promise<string> {
+  async extractCV(page: any): Promise<{ filePath: string; filename: string; text: string; publicUrl: string; method: string }> {
     let filePath = "";
 
-    // Click on the CV tab
+    console.info("[CV] Clicking CV tab...");
     await page.getByRole('tab', { name: 'CV' }).click();
 
-    // Check if the CV is empty
     if (await page.locator("id=imgApplicantDetailCVEmptyState").count() > 0) {
-      return filePath;
+      console.info("[CV] No CV uploaded for this applicant.");
+      return { filePath, filename: "", text: "", publicUrl: "", method: "" };
     }
 
-    // Wait for the CV download button to be visible
+    console.info("[CV] Waiting for CV download button...");
     await this.checkLazyLoadedElement(page, '[data-test-id="btnApplicantDetailDownloadCV"]')
 
-    // Check if the CV download button exists
     if (await page.locator('[data-test-id="btnApplicantDetailDownloadCV"]').count() > 0) {
       // Open a new page when the CV download button is clicked
       const pagePromise = page.waitForEvent('popup');
@@ -1044,7 +1199,19 @@ export class KitaLulus {
       // Close the new page
       await newPage.close();
     }
-    return filePath
+
+    if (filePath === "") {
+      return { filePath, filename: "", text: "", publicUrl: "", method: "" };
+    }
+
+    const extracted = await this.extractTextFromCV(filePath);
+    return {
+      filePath,
+      filename: path.basename(filePath),
+      text: extracted.text,
+      publicUrl: this.buildStoragePublicUrl(filePath),
+      method: extracted.method,
+    };
   }
 
   /**
@@ -1055,16 +1222,14 @@ export class KitaLulus {
    *                              If the contact number is not found, an empty string is returned.
    */
   async extractWA(page: any): Promise<Contact> {
+    console.info("[PHONE] Extracting WhatsApp number...");
     if (await page.locator(this.APPLICANT_WHATAAPPS_SELECTOR).count() > 0) {
-      return {
-        type: "WhatsApp",
-        contact_number: await page.locator(this.APPLICANT_WHATAAPPS_SELECTOR).textContent() ?? ""
-      }
+      const num = await page.locator(this.APPLICANT_WHATAAPPS_SELECTOR).textContent() ?? "";
+      console.info(`[PHONE] Found: ${num || "(empty)"}`);
+      return { type: "WhatsApp", contact_number: num };
     }
-    return {
-      type: "",
-      contact_number: ""
-    };
+    console.info("[PHONE] WhatsApp selector not found on page.");
+    return { type: "", contact_number: "" };
   }
 
   /**
@@ -1167,10 +1332,13 @@ export class KitaLulus {
         'application/pdf': 'pdf',
         'image/jpeg': 'jpg',
         'image/png': 'png',
+        'image/webp': 'webp',
+        'application/msword': 'doc',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
       };
 
-      const contentType = response.headers['content-type'];
-      const extension = mimeTypes[contentType];
+      const contentType = String(response.headers['content-type'] ?? '').split(";")[0];
+      const extension = mimeTypes[contentType] ?? path.extname(new URL(imageUrl).pathname).replace(".", "") || "bin";
       const filePath = path.join(__dirname, "../storage/", `${Date.now()}.${extension}`);
 
       await fs.promises.writeFile(filePath, response.data);
@@ -1179,6 +1347,91 @@ export class KitaLulus {
     } catch (error) {
       console.error(error);
       return ""
+    }
+  }
+
+  buildStoragePublicUrl(filePath: string): string {
+    if (filePath === "") {
+      return "";
+    }
+    return `/storage/${encodeURIComponent(path.basename(filePath))}`;
+  }
+
+  async extractTextFromCV(filePath: string): Promise<{ text: string; method: string }> {
+    if (filePath === "") {
+      return { text: "", method: "" };
+    }
+
+    const extension = path.extname(filePath).toLowerCase();
+
+    if (extension === ".pdf") {
+      const parsedText = await this.extractPdfText(filePath);
+      if (parsedText.length >= 40) {
+        console.info(`[CV] Extracted ${parsedText.length} characters via pdf-parse.`);
+        return { text: parsedText, method: "pdf-parse" };
+      }
+
+      const ocrText = await this.extractPdfTextWithOCR(filePath);
+      if (ocrText.length > 0) {
+        console.info(`[CV] Extracted ${ocrText.length} characters via OCR fallback.`);
+        return { text: ocrText, method: "tesseract-ocr" };
+      }
+    }
+
+    console.info(`[CV] OCR skipped for unsupported extension "${extension || "(none)"}".`);
+    return { text: "", method: "" };
+  }
+
+  async extractPdfText(filePath: string): Promise<string> {
+    try {
+      const buffer = await fs.promises.readFile(filePath);
+      const parsed = await pdfParse(buffer);
+      return parsed.text.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    } catch (error) {
+      console.error("[WARN] pdf-parse failed:", error);
+      return "";
+    }
+  }
+
+  async extractPdfTextWithOCR(filePath: string): Promise<string> {
+    const tempDir = await fs.promises.mkdtemp(path.join(path.dirname(filePath), "ocr-"));
+
+    try {
+      const outputPrefix = path.join(tempDir, "page");
+      execFileSync("magick", [
+        "-density",
+        "200",
+        `${filePath}[0-2]`,
+        "-alpha",
+        "off",
+        `${outputPrefix}-%03d.png`,
+      ]);
+
+      const imageFiles = (await fs.promises.readdir(tempDir))
+        .filter((name) => name.endsWith(".png"))
+        .sort();
+
+      const textParts: string[] = [];
+      for (const imageFile of imageFiles) {
+        const stdout = execFileSync("tesseract", [
+          path.join(tempDir, imageFile),
+          "stdout",
+          "-l",
+          "eng+ind",
+        ], { encoding: "utf-8" });
+
+        const cleaned = stdout.replace(/\s+\n/g, "\n").trim();
+        if (cleaned !== "") {
+          textParts.push(cleaned);
+        }
+      }
+
+      return textParts.join("\n\n").trim();
+    } catch (error) {
+      console.error("[WARN] OCR fallback failed:", error);
+      return "";
+    } finally {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
     }
   }
 
@@ -1308,9 +1561,11 @@ export class KitaLulus {
   async insertApplicant(data: Applicant): Promise<void> {
     console.info(`Inserting applicant ${data.email} into the database...`);
 
+    const safeEmail = data.email.replace(/'/g, "''");
+    const safeData = JSON.stringify(data).replace(/'/g, "''");
     const insertQuery = `
       INSERT INTO applicants (email, data)
-      VALUES ('${data.email}', '${JSON.stringify(data)}')
+      VALUES ('${safeEmail}', '${safeData}')
     `;
 
     return new Promise((resolve, reject) => {
@@ -1334,8 +1589,9 @@ export class KitaLulus {
   async getApplicantByEmail(email: string): Promise<ApplicantDB> {
     console.info(`Getting applicant by email ${email}...`);
 
+    const safeEmail = email.replace(/'/g, "''");
     const selectQuery = `
-      SELECT * FROM applicants WHERE email = '${email}'
+      SELECT * FROM applicants WHERE email = '${safeEmail}'
     `;
 
     return new Promise((resolve, reject) => {
