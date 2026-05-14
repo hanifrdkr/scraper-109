@@ -418,6 +418,48 @@ export class Pintarnya {
     this.DB = new sqlite3.Database(this.DB_PATH);
   }
 
+  getBrowserFallbackExecutablePath(): string | null {
+    const candidates = [
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/opt/homebrew/bin/chromium",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  async launchBrowser(): Promise<playwright.Browser> {
+    const launchOptions: Parameters<typeof playwright.chromium.launch>[0] = {
+      headless: this.HEADLESS,
+    };
+
+    try {
+      return await playwright.chromium.launch(launchOptions);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("Executable doesn't exist")) {
+        throw error;
+      }
+
+      const fallbackExecutablePath = this.getBrowserFallbackExecutablePath();
+      if (!fallbackExecutablePath) {
+        throw error;
+      }
+
+      console.info(`[LOGIN] Playwright bundled Chromium missing. Falling back to local browser: ${fallbackExecutablePath}`);
+      return await playwright.chromium.launch({
+        ...launchOptions,
+        executablePath: fallbackExecutablePath,
+      });
+    }
+  }
+
   /**
    * Scrapes data from the Pintarnya website.
    * @returns {Promise<void>} A promise that resolves when the scraping is complete.
@@ -432,9 +474,7 @@ export class Pintarnya {
 
     console.info("[LOGIN] Launching browser...");
 
-    const browser = await playwright.chromium.launch({
-      headless: this.HEADLESS,
-    });
+    const browser = await this.launchBrowser();
     const page = await browser.newPage();
     page.setDefaultTimeout(this.TIMEOUT);
 
@@ -460,12 +500,28 @@ export class Pintarnya {
     await page.locator(this.SIGN_IN_SUBMIT_SELECTOR).click();
     console.info("[LOGIN] Submitted. Waiting for redirect to job vacancy page...");
 
-    await this.waitPageFromURL(page, this.JOB_VACANCY_URL);
+    await this.waitForEmployerLandingPage(page);
     await page.waitForLoadState("load");
     console.info("[LOGIN] Login successful.");
 
+    if (await this.isCandidateListPage(page)) {
+      console.info("[NAV] Session already opened the Kandidat page. Staying on the current page.");
+      const applicantCount = await this.extractCurrentCandidatePageApplicantCount(page);
+      await this.processCurrentCandidatePage(page, applicantCount);
+      console.info("[DONE] Finished scraping the current Kandidat page.");
+      process.exit(0);
+    }
+
     console.info("[VACANCY] Closing modals and fetching job list...");
     await this.errorCatcher(page);
+
+    if (await this.isCandidateListPage(page)) {
+      console.info("[NAV] Kandidat page detected after login cleanup. Skipping Lowongan scrolling.");
+      const applicantCount = await this.extractCurrentCandidatePageApplicantCount(page);
+      await this.processCurrentCandidatePage(page, applicantCount);
+      console.info("[DONE] Finished scraping the current Kandidat page.");
+      process.exit(0);
+    }
 
     console.info("[VACANCY] Scrolling to load all job vacancies...");
     const jobVacancyListContainer = await this.fetchingAllJobList(page);
@@ -550,16 +606,18 @@ export class Pintarnya {
       console.info(`[VACANCY] Opening candidates page (${applicantCount} total applicants)...`);
       await this.errorCatcher(page);
       await jobVacancyDetailButton.click();
-      console.info("[VACANCY] Waiting for candidate page to load (#filter-container)...");
+      console.info("[VACANCY] Waiting for candidate page markers...");
       await this.waitCandidatePageReady(page);
-      await page.waitForTimeout(10000);
 
       let nthCard = 0;
       let isScrappingCard = true;
 
       try {
         await this.errorCatcher(page);
-        await page.waitForSelector('div[id^="candidate-card-"]');
+        isScrappingCard = await this.ensureCandidateCardsReady(page);
+        if (!isScrappingCard) {
+          console.info("[VACANCY] Kandidat page loaded, but no candidate cards are visible.");
+        }
       } catch (error) {
         isScrappingCard = false;
       }
@@ -1040,6 +1098,7 @@ export class Pintarnya {
    */
   async scrollToFetchAllJobList(page: playwright.Page): Promise<void> {
     const NO_VACANCY_TEXT = "Belum ada lowongan kerja";
+    const MAX_SCROLL_COUNT = 250;
     console.info('[VACANCY] Scrolling until "Semua lowongan kerja sudah di tampilkan" is visible...');
     let scrollCount = 0;
     while (
@@ -1047,12 +1106,21 @@ export class Pintarnya {
     ) {
       await this.errorCatcher(page);
 
+      if (await this.isCandidateListPage(page)) {
+        console.info("[NAV] Kandidat page detected during vacancy scroll. Stopping vacancy flow.");
+        return;
+      }
+
       if (await page.getByText(NO_VACANCY_TEXT).isVisible()) {
         console.info("[VACANCY] No vacancies found. Exiting.");
         process.exit(0);
       }
 
       scrollCount++;
+      if (scrollCount >= MAX_SCROLL_COUNT) {
+        console.info(`[VACANCY] Scroll guard hit at ${scrollCount}. Stopping vacancy scroll.`);
+        return;
+      }
       if (scrollCount % 5 === 0) {
         console.info(`[VACANCY] Still scrolling to load all vacancies... (scroll ${scrollCount})`);
       }
@@ -1076,10 +1144,20 @@ export class Pintarnya {
     console.info('Get section with id="telo"');
     const jobVacancyListContainer = page.locator(this.JOB_LIST_CONTAINER_SELECTOR);
 
+    if (await this.isCandidateListPage(page)) {
+      console.info("[NAV] Already on Kandidat page inside fetchingAllJobList().");
+      return jobVacancyListContainer;
+    }
+
     /**
      * Filter the jobVacancy list by active status.
      */
     await this.selectActiveJobList(page);
+
+    if (await this.isCandidateListPage(page)) {
+      console.info("[NAV] Kandidat page detected after filter step.");
+      return jobVacancyListContainer;
+    }
 
     /**
      * Scroll until the text "Semua lowongan kerja sudah di tampilkan" is visible.
@@ -1428,11 +1506,344 @@ export class Pintarnya {
     return jobDesc.replace(/[^a-zA-Z0-9\s,.()]/g, " ");
   }
 
-  async waitCandidatePageReady(page: playwright.Page) {
+  async waitCandidatePageReady(page: playwright.Page, retryCount: number = 0): Promise<void> {
     try {
-      await page.waitForSelector("#filter-container");
+      await Promise.race([
+        page.waitForURL(/\/perusahaan\/candidates/, {
+          waitUntil: "domcontentloaded",
+          timeout: this.TIMEOUT,
+        }),
+        page.waitForSelector("#filter-container", {
+          timeout: this.TIMEOUT,
+        }),
+        page.getByText("Profil Kandidat", { exact: true }).waitFor({
+          state: "visible",
+          timeout: this.TIMEOUT,
+        }),
+        page.waitForSelector('div[id^="candidate-card-"]', {
+          timeout: this.TIMEOUT,
+        }),
+      ]);
+
+      console.info(`[NAV] Kandidat page ready at ${page.url()}`);
     } catch (error) {
+      if (retryCount < this.MAX_RETRY) {
+        console.info(`[NAV] Kandidat page not ready yet. Retrying (${retryCount + 1}/${this.MAX_RETRY})...`);
+        await this.errorCatcher(page);
+        await page.waitForTimeout(1000);
+        await this.waitCandidatePageReady(page, retryCount + 1);
+        return;
+      }
+
+      throw error;
+    }
+  }
+
+  async waitForCandidateCards(page: playwright.Page): Promise<boolean> {
+    try {
+      await page.waitForSelector('div[id^="candidate-card-"]', {
+        state: "visible",
+        timeout: this.TIMEOUT,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async ensureCandidateCardsReady(page: playwright.Page): Promise<boolean> {
+    if (await this.waitForCandidateCards(page)) {
+      return true;
+    }
+
+    await this.selectMelamarCandidateStatus(page);
+    return await this.waitForCandidateCards(page);
+  }
+
+  async selectMelamarCandidateStatus(page: playwright.Page): Promise<void> {
+    try {
+      const filterContainer = page.locator("#filter-container");
+      if ((await filterContainer.count()) === 0) {
+        return;
+      }
+
+      const melamarCandidates = [
+        filterContainer.getByText(/^Melamar$/).first(),
+        page.getByText(/^Melamar$/).first(),
+      ];
+
+      for (const melamar of melamarCandidates) {
+        try {
+          if ((await melamar.count()) === 0 || !(await melamar.isVisible())) {
+            continue;
+          }
+
+          console.info("[NAV] Selecting Kandidat status: Melamar...");
+          await melamar.click();
+          await page.waitForTimeout(1500);
+          return;
+        } catch {
+          // Try the next candidate locator.
+        }
+      }
+
+      console.info("[NAV] Melamar status control not found. Using current Kandidat filter.");
+    } catch (error) {
+      console.error("[WARN] Failed selecting Melamar status:", error);
+    }
+  }
+
+  async waitForEmployerLandingPage(page: playwright.Page): Promise<void> {
+    await page.waitForURL(/\/perusahaan\/(jobs|candidates)/, {
+      waitUntil: "load",
+    });
+    console.info(`[LOGIN] Landed on ${page.url()}`);
+  }
+
+  async isCandidateListPage(page: playwright.Page): Promise<boolean> {
+    const currentUrl = page.url();
+    if (currentUrl.includes("/perusahaan/candidates")) {
+      return true;
+    }
+
+    if ((await page.locator("#filter-container").count()) > 0) {
+      return true;
+    }
+
+    if ((await page.getByText("Profil Kandidat", { exact: true }).count()) > 0) {
+      return true;
+    }
+
+    return false;
+  }
+
+  async extractCurrentCandidatePageApplicantCount(page: playwright.Page): Promise<number> {
+    try {
+      const bodyText = await page.locator("body").textContent() ?? "";
+      const match = bodyText.match(/Menampilkan\s+(\d+)\s+dari\s+(\d+)\s+Kandidat/i);
+      if (!match) {
+        return 0;
+      }
+      return parseInt(match[2] ?? match[1] ?? "0", 10);
+    } catch {
+      return 0;
+    }
+  }
+
+  async processCurrentCandidatePage(page: playwright.Page, applicantCount: number): Promise<void> {
+    // Correct behavior note from the provided Kandidat page:
+    // if Pintarnya lands directly on the vacancy Kandidat page, stay there and scrape
+    // the visible candidate list + right-side profile preview instead of forcing Lowongan.
+    let nthCard = 0;
+    let isScrappingCard = true;
+
+    try {
+      await this.errorCatcher(page);
       await this.waitCandidatePageReady(page);
+      isScrappingCard = await this.ensureCandidateCardsReady(page);
+    } catch (error) {
+      isScrappingCard = false;
+    }
+
+    const pageUrl = page.url();
+    const appliedForId = pageUrl.split("job=")[1];
+
+    if (appliedForId) {
+      const jobVacancyInDatabase = await this.getVacancyByPintarnyaJobId(appliedForId);
+      const applicantsOfJobVacancyInDatabase = await this.countApplicantByPintarnyaJobId(appliedForId);
+
+      if (jobVacancyInDatabase === undefined) {
+        await this.insertJobVacancy("Pintarnya Kandidat Page", "", appliedForId, applicantCount);
+      } else if (
+        applicantCount === jobVacancyInDatabase.applicants &&
+        jobVacancyInDatabase.applicants === applicantsOfJobVacancyInDatabase
+      ) {
+        console.info("[SKIP] No new applicants on the current Kandidat page.");
+        isScrappingCard = false;
+      }
+    }
+
+    while (isScrappingCard) {
+      if (this.LIMIT > 0 && this.COLLECTED_APPLICANT >= this.LIMIT) {
+        console.info("Scrape limit reached. Exiting...");
+        process.exit(0);
+      }
+
+      try {
+        console.info("-------------------------------------------------------");
+        console.info(`[CANDIDATE] Scraping card #${nthCard + 1} from current Kandidat page...`);
+
+        const cardSelector = `div[id="candidate-card-${nthCard + 1}"]`;
+        await this.errorCatcher(page);
+        const card = page.locator(cardSelector);
+
+        if (!await card.isVisible()) {
+          break;
+        }
+
+        await card.click();
+
+        const candidateCardDetail = page.locator("div#candidate-detail");
+        await this.checkLazyLoadedElement(page, candidateCardDetail);
+
+        const candidateName = await card.locator("div").nth(0).textContent();
+        if (candidateName === null) {
+          throw new Error("Candidate name is null");
+        }
+
+        await candidateCardDetail.getByText(candidateName, { exact: true }).isVisible();
+
+        const candidateAgeAndLocation = await candidateCardDetail.locator(".text-grey-dust").first().textContent();
+        const candidateAge = candidateAgeAndLocation?.split("•")[0]?.trim();
+        const candidateLocation = candidateAgeAndLocation?.split("•")[1]?.trim();
+
+        const candidateAppliedJobAndDate = await candidateCardDetail
+          .getByText("Melamar pada:")
+          .locator("..")
+          .textContent();
+
+        const appliedFor = candidateAppliedJobAndDate
+          ?.split("Melamar pada:")[0]
+          ?.trim()
+          ?.replace(/\d+/g, "")
+          ?.trim();
+
+        const appliedDate = candidateAppliedJobAndDate?.split("pada")[1].trim();
+
+        const candidateEmail = await candidateCardDetail
+          .locator(".cursor-pointer.text-grey-dust")
+          .nth(0)
+          .textContent();
+
+        const applicantInDatabase = await this.getApplicantByEmail(candidateEmail || "");
+        if (
+          applicantInDatabase !== undefined &&
+          applicantInDatabase.email === candidateEmail &&
+          applicantInDatabase.applied_for_id === appliedForId
+        ) {
+          console.info("[SKIP] Already in local DB, skipping.");
+          this.SKIPPED_APPLICANT_BY_DATABASE++;
+          nthCard++;
+          continue;
+        }
+
+        const candidatePhoneButton = candidateCardDetail
+          .locator("div.justify-start")
+          .locator("button")
+          .nth(1);
+        await candidatePhoneButton.click();
+
+        const candidatePhoneModal = page
+          .locator("div")
+          .filter({ hasText: /^Kontak Kandidat$/ });
+        await this.checkLazyLoadedElement(page, candidatePhoneModal);
+        await candidatePhoneModal.waitFor({ state: "attached" });
+
+        const candidatePhone = await candidatePhoneModal.locator("div").nth(2).textContent();
+        await candidatePhoneModal.locator("img").click();
+
+        const latestSalaryLabel = candidateCardDetail.getByText("Gaji terakhir");
+        let latestSalary = "0";
+        if (await latestSalaryLabel.isVisible()) {
+          latestSalary = await latestSalaryLabel.locator("..").locator(".fw-600").textContent() ?? "0";
+        }
+
+        const experienceLabel = candidateCardDetail.getByRole("heading", { name: "Pengalaman Kerja" });
+        let experiences: WorkExperience[] = [];
+        if (await experienceLabel.isVisible()) {
+          await experienceLabel.scrollIntoViewIfNeeded();
+          const experienceWrapper = experienceLabel.locator("..").locator("..");
+          const anyUlInsideExperienceWrapper = experienceWrapper.locator("ul").all();
+          for (const experience of await anyUlInsideExperienceWrapper) {
+            const experienceDetail = experience.locator("ul");
+            if ((await experienceDetail.count()) > 0) {
+              const company = await experience.locator("li").nth(0).textContent();
+              const position = await experienceDetail.locator(".fw-600").first().textContent();
+              const longEmployment = await experienceDetail.locator(".fw-500").nth(0).textContent();
+              const description = await experienceDetail
+                .locator(".fw-500")
+                .nth(1)
+                .locator("div")
+                .nth(0)
+                .textContent();
+              const [periodFrom, periodTo] = this.extractEmploymentPeriod(longEmployment ?? "-");
+              experiences.push({
+                position: position ?? "-",
+                organization: company ?? "-",
+                job_desc: this.cleanString(description ?? "") || "-",
+                period_from: periodFrom ?? "0",
+                period_to: periodTo ?? "0",
+              });
+            }
+          }
+        }
+
+        const educationLabel = candidateCardDetail.getByRole("heading", { name: "Pendidikan" });
+        await educationLabel.scrollIntoViewIfNeeded();
+        const educationWrapper = educationLabel.locator("..");
+        const education = await educationWrapper.locator("p").allTextContents();
+
+        const skillsLabel = candidateCardDetail.getByRole("heading", { name: "Keahlian" });
+        let skills: string[] = [];
+        if (await skillsLabel.isVisible()) {
+          await skillsLabel.scrollIntoViewIfNeeded();
+          const skillsWrapper = skillsLabel.locator("..");
+          const skillBadges = await skillsWrapper.locator(".text-grey-dust").allTextContents();
+          skills.push(...skillBadges.slice(3));
+        }
+
+        const photo = await candidateCardDetail.getByAltText("photo profile").getAttribute("src");
+        const photoUrl = this.BASE_URL + photo;
+        const photoFile = photo ? await this.urlToFile(photoUrl, `${candidateName}.webp`) : null;
+
+        const qualificationButton = candidateCardDetail.getByText("Hasil Kualifikasi").first();
+        await qualificationButton.click();
+
+        const educationQualificationLabel = candidateCardDetail.locator(".fw-600").filter({ hasText: "Pendidikan" }).first();
+        const educationLevel = await educationQualificationLabel
+          .locator("..")
+          .locator("div")
+          .last()
+          .textContent();
+
+        const genderLabel = candidateCardDetail.locator(".fw-600").filter({ hasText: "Jenis Kelamin" }).first();
+        const gender = await genderLabel.locator("..").locator("div").last().textContent();
+
+        const applicant: Applicant = {
+          channel: this.CHANNEL,
+          type: this.TYPE,
+          applied_for: appliedFor ?? "",
+          applied_for_id: appliedForId ?? "",
+          applied_date: this.parseStringDate(appliedDate ?? ""),
+          email: candidateEmail ?? "",
+          fullname: candidateName ?? "",
+          nickname: "",
+          photo: photoFile,
+          date_of_birth: "",
+          age: parseInt(candidateAge ?? "0"),
+          contact: {
+            type: "whatsapp",
+            contact_number: candidatePhone ?? "",
+          },
+          summary: "",
+          latest_salary: this.cleanSalary(latestSalary ?? "0"),
+          salary_expectation: 0,
+          work_experiences: experiences,
+          educations: [this.extractEducationData(education, educationLevel ?? "-")],
+          skills: this.cleanSkills(skills),
+          location: candidateLocation ?? "",
+          reference_links: [],
+          cv: null,
+          gender: gender ? this.cleanGender(gender) : "",
+        };
+
+        await this.sendRequest(applicant);
+      } catch (error) {
+        console.log(error);
+      }
+
+      nthCard++;
+      console.info("-------------------------------------------------------");
     }
   }
 
