@@ -1024,6 +1024,21 @@ class KitaLulus {
             return applicant;
         });
     }
+    getOptionalText(locator) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a;
+            try {
+                if ((yield locator.count()) === 0) {
+                    return "";
+                }
+                const text = yield locator.first().textContent({ timeout: 1500 });
+                return (_a = text === null || text === void 0 ? void 0 : text.trim()) !== null && _a !== void 0 ? _a : "";
+            }
+            catch (_b) {
+                return "";
+            }
+        });
+    }
     /**
      * Extracts the name from the given page.
      *
@@ -1033,7 +1048,7 @@ class KitaLulus {
      */
     extractName(page) {
         return __awaiter(this, void 0, void 0, function* () {
-            const nameText = yield page.locator(this.APPLICANT_DETAIL_NAME_SELECTOR).textContent();
+            const nameText = yield this.getOptionalText(page.locator(this.APPLICANT_DETAIL_NAME_SELECTOR));
             return nameText.replace(",", "");
         });
     }
@@ -1045,7 +1060,7 @@ class KitaLulus {
      */
     extractAge(page) {
         return __awaiter(this, void 0, void 0, function* () {
-            const ageText = yield page.locator(this.APPLICANT_DETAIL_AGE_SELECTOR).textContent();
+            const ageText = yield this.getOptionalText(page.locator(this.APPLICANT_DETAIL_AGE_SELECTOR));
             return ageText;
         });
     }
@@ -1057,7 +1072,7 @@ class KitaLulus {
      */
     extractAbout(page) {
         return __awaiter(this, void 0, void 0, function* () {
-            const aboutText = yield page.locator(this.APPLICANT_DETAIL_ABOUT_SELECTOR).textContent();
+            const aboutText = yield this.getOptionalText(page.locator(this.APPLICANT_DETAIL_ABOUT_SELECTOR));
             return aboutText;
         });
     }
@@ -1069,7 +1084,7 @@ class KitaLulus {
      */
     extractNickName(page) {
         return __awaiter(this, void 0, void 0, function* () {
-            const nickNameText = yield page.locator(this.APPLICANT_NICK_NAME_SELECTOR).locator("p").textContent();
+            const nickNameText = yield this.getOptionalText(page.locator(this.APPLICANT_NICK_NAME_SELECTOR).locator("p"));
             return nickNameText;
         });
     }
@@ -1082,7 +1097,7 @@ class KitaLulus {
      */
     extractBirthday(page) {
         return __awaiter(this, void 0, void 0, function* () {
-            const birthdayText = yield page.locator(this.APPLICANT_BIRTHDAY_SELECTOR).locator("p").textContent();
+            const birthdayText = yield this.getOptionalText(page.locator(this.APPLICANT_BIRTHDAY_SELECTOR).locator("p"));
             return this.ConvertDate(birthdayText);
         });
     }
@@ -1096,7 +1111,7 @@ class KitaLulus {
      */
     extractGender(page) {
         return __awaiter(this, void 0, void 0, function* () {
-            const genderText = yield page.locator(this.APPLICANT_GENDER_SELECTOR).locator("p").textContent();
+            const genderText = yield this.getOptionalText(page.locator(this.APPLICANT_GENDER_SELECTOR).locator("p"));
             const genderType = {
                 'Perempuan': 'FEMALE',
                 'Laki-Laki': 'MALE'
@@ -1112,7 +1127,7 @@ class KitaLulus {
      */
     extractLocation(page) {
         return __awaiter(this, void 0, void 0, function* () {
-            const locationText = yield page.locator(this.APPLICANT_DOMISLI_SELECTOR).locator("p").textContent();
+            const locationText = yield this.getOptionalText(page.locator(this.APPLICANT_DOMISLI_SELECTOR).locator("p"));
             return locationText;
         });
     }
