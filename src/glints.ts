@@ -512,6 +512,24 @@ export function descriptionKeyPaths(value: unknown, maxDepth = 8): { path: strin
   return Array.from(found, ([path, length]) => ({ path, length }));
 }
 
+/**
+ * The subset of a dashboard API request's headers worth replaying on another
+ * call to the same API: `authorization` plus the app's own `x-*` headers.
+ * Transport and browser-managed headers (cookie, host, content-*, accept-*,
+ * forwarding and sec-* headers) are dropped — Playwright's request context
+ * supplies those itself, and cookies already ride along.
+ */
+export function replayableGlintsHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [rawName, value] of Object.entries(headers ?? {})) {
+    const name = rawName.toLowerCase();
+    if (typeof value !== "string" || value === "") continue;
+    const keep = name === "authorization" || (name.startsWith("x-") && !name.startsWith("x-forwarded"));
+    if (keep) out[name] = value;
+  }
+  return out;
+}
+
 export class Glints {
   private HEADLESS: boolean = true;
   private LIMIT: number = 0;
@@ -1523,6 +1541,7 @@ export class Glints {
         { timeout },
       )
       .then(async (resp: any) => {
+        await this.rememberDashboardApiHeaders(resp);
         const detail = parseGlintsApplicationDetail(await resp.json());
         if (detail === null) return null;
         if (normalizeGlintsApplicantName(detail.applicantName) !== normalizeGlintsApplicantName(expectedName)) {
@@ -1547,14 +1566,38 @@ export class Glints {
    * @param filename - Display filename for the content-disposition, no path.
    * @returns The local file path of the stored resume, or "".
    */
+  /**
+   * Request headers the dashboard's own successful API calls carried, replayed
+   * on the resume download. Every download returned 401 on 2026-09-13 while
+   * sending only the session cookies (page.request shares cookies, not the
+   * dashboard's XHR headers): Glints' API authenticates with a header token
+   * the dashboard attaches itself. Captured from the application-detail
+   * request the dashboard fires on modal open; never logged.
+   */
+  private dashboardApiHeaders: Record<string, string> = {};
+
+  private async rememberDashboardApiHeaders(response: any): Promise<void> {
+    try {
+      const headers = replayableGlintsHeaders(await response.request().allHeaders());
+      if (Object.keys(headers).length > 0) this.dashboardApiHeaders = headers;
+    } catch {
+      // A closed page or a mocked request: keep whatever was captured before.
+    }
+  }
+
   async fetchResumeViaApi(page: any, resumeKey: string, filename: string): Promise<string> {
     try {
       const response = await page.request.get("https://employers.glints.id/api/s3/download", {
         params: { key: resumeKey, label: "resume", filename: `${filename}.pdf` },
+        headers: this.dashboardApiHeaders,
         timeout: Math.min(this.TIMEOUT, 30000),
       });
       if (!response.ok()) {
-        console.warn(`[GLINTS] resume download endpoint returned status ${response.status()}`);
+        // Header names only — the values are session credentials.
+        const replayed = Object.keys(this.dashboardApiHeaders);
+        console.warn(
+          `[GLINTS] resume download endpoint returned status ${response.status()} (replayed dashboard headers: ${replayed.length ? replayed.join(",") : "none captured"})`,
+        );
         return "";
       }
       const body = await response.json();

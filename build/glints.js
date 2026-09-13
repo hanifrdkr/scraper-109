@@ -35,7 +35,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Glints = exports.descriptionKeyPaths = exports.normalizeGlintsApplicantName = exports.stripGlintsContactMask = exports.parseGlintsApplicationDetail = exports.classifyGlintsLoginResult = exports.GLINTS_VERIFICATION_SUBMIT_TEXT_SELECTOR = exports.GLINTS_VERIFICATION_SUBMIT_SELECTOR = exports.GLINTS_VERIFICATION_METHOD_SELECTOR = exports.GLINTS_VERIFICATION_EMAIL_BUTTON_SELECTOR = exports.normalizeCompanyName = exports.resetGlintsLoginState = exports.glintsSessionStore = exports.GLINTS_PIPELINE_STAGES = exports.GLINTS_APPLICANT_ROW_SELECTOR = void 0;
+exports.Glints = exports.replayableGlintsHeaders = exports.descriptionKeyPaths = exports.normalizeGlintsApplicantName = exports.stripGlintsContactMask = exports.parseGlintsApplicationDetail = exports.classifyGlintsLoginResult = exports.GLINTS_VERIFICATION_SUBMIT_TEXT_SELECTOR = exports.GLINTS_VERIFICATION_SUBMIT_SELECTOR = exports.GLINTS_VERIFICATION_METHOD_SELECTOR = exports.GLINTS_VERIFICATION_EMAIL_BUTTON_SELECTOR = exports.normalizeCompanyName = exports.resetGlintsLoginState = exports.glintsSessionStore = exports.GLINTS_PIPELINE_STAGES = exports.GLINTS_APPLICANT_ROW_SELECTOR = void 0;
 const playwright_1 = __importDefault(require("playwright"));
 const fs_1 = __importDefault(require("fs"));
 const axios_1 = __importDefault(require("axios"));
@@ -316,6 +316,26 @@ function descriptionKeyPaths(value, maxDepth = 8) {
     return Array.from(found, ([path, length]) => ({ path, length }));
 }
 exports.descriptionKeyPaths = descriptionKeyPaths;
+/**
+ * The subset of a dashboard API request's headers worth replaying on another
+ * call to the same API: `authorization` plus the app's own `x-*` headers.
+ * Transport and browser-managed headers (cookie, host, content-*, accept-*,
+ * forwarding and sec-* headers) are dropped — Playwright's request context
+ * supplies those itself, and cookies already ride along.
+ */
+function replayableGlintsHeaders(headers) {
+    const out = {};
+    for (const [rawName, value] of Object.entries(headers !== null && headers !== void 0 ? headers : {})) {
+        const name = rawName.toLowerCase();
+        if (typeof value !== "string" || value === "")
+            continue;
+        const keep = name === "authorization" || (name.startsWith("x-") && !name.startsWith("x-forwarded"));
+        if (keep)
+            out[name] = value;
+    }
+    return out;
+}
+exports.replayableGlintsHeaders = replayableGlintsHeaders;
 class Glints {
     /**
      * Represents a Glints object.
@@ -345,6 +365,26 @@ class Glints {
         this.VERIFICATION_CODE_WAIT_MS = 10 * 60000;
         this.VERIFICATION_POLL_INTERVAL_MS = 15000;
         this.VERIFICATION_REQUEST_MIN_INTERVAL_MS = 30 * 60000;
+        /**
+         * Downloads the applicant's resume through the dashboard's own
+         * GET /api/s3/download endpoint (the same call the modal's CV tab makes) and
+         * stores it locally for the sink upload. Failures degrade to "" so a missing
+         * resume never fails the row; the signed URL is never logged.
+         *
+         * @param page - The page whose session performs the API request.
+         * @param resumeKey - The resume file key from the application detail.
+         * @param filename - Display filename for the content-disposition, no path.
+         * @returns The local file path of the stored resume, or "".
+         */
+        /**
+         * Request headers the dashboard's own successful API calls carried, replayed
+         * on the resume download. Every download returned 401 on 2026-09-13 while
+         * sending only the session cookies (page.request shares cookies, not the
+         * dashboard's XHR headers): Glints' API authenticates with a header token
+         * the dashboard attaches itself. Captured from the application-detail
+         * request the dashboard fires on modal open; never logged.
+         */
+        this.dashboardApiHeaders = {};
         this.loggedMissingEditLink = false;
         this.descriptionShapesLogged = new Set();
         this.HEADLESS = config.headless;
@@ -1232,6 +1272,7 @@ class Glints {
         return page
             .waitForResponse((resp) => /\/api\/jobs\/[^/]+\/applications\/[^/?]+/.test(resp.url()) && resp.status() === 200, { timeout })
             .then((resp) => __awaiter(this, void 0, void 0, function* () {
+            yield this.rememberDashboardApiHeaders(resp);
             const detail = parseGlintsApplicationDetail(yield resp.json());
             if (detail === null)
                 return null;
@@ -1243,26 +1284,30 @@ class Glints {
         }))
             .catch(() => null);
     }
-    /**
-     * Downloads the applicant's resume through the dashboard's own
-     * GET /api/s3/download endpoint (the same call the modal's CV tab makes) and
-     * stores it locally for the sink upload. Failures degrade to "" so a missing
-     * resume never fails the row; the signed URL is never logged.
-     *
-     * @param page - The page whose session performs the API request.
-     * @param resumeKey - The resume file key from the application detail.
-     * @param filename - Display filename for the content-disposition, no path.
-     * @returns The local file path of the stored resume, or "".
-     */
+    rememberDashboardApiHeaders(response) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const headers = replayableGlintsHeaders(yield response.request().allHeaders());
+                if (Object.keys(headers).length > 0)
+                    this.dashboardApiHeaders = headers;
+            }
+            catch (_a) {
+                // A closed page or a mocked request: keep whatever was captured before.
+            }
+        });
+    }
     fetchResumeViaApi(page, resumeKey, filename) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
                 const response = yield page.request.get("https://employers.glints.id/api/s3/download", {
                     params: { key: resumeKey, label: "resume", filename: `${filename}.pdf` },
+                    headers: this.dashboardApiHeaders,
                     timeout: Math.min(this.TIMEOUT, 30000),
                 });
                 if (!response.ok()) {
-                    console.warn(`[GLINTS] resume download endpoint returned status ${response.status()}`);
+                    // Header names only — the values are session credentials.
+                    const replayed = Object.keys(this.dashboardApiHeaders);
+                    console.warn(`[GLINTS] resume download endpoint returned status ${response.status()} (replayed dashboard headers: ${replayed.length ? replayed.join(",") : "none captured"})`);
                     return "";
                 }
                 const body = yield response.json();
