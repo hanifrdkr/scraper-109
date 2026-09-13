@@ -1921,7 +1921,7 @@ export class Glints {
     }
 
     for (const it of listVacancyPage) {
-      if (this.COLLECTED == this.LIMIT) {
+      if (this.limitReached()) {
         break;
       }
 
@@ -1944,7 +1944,7 @@ export class Glints {
       // any applicant being progressed. Stage tabs are filter-only — a click
       // never moves an applicant between stages.
       for (const stage of GLINTS_PIPELINE_STAGES) {
-        if (this.COLLECTED == this.LIMIT) {
+        if (this.limitReached()) {
           break;
         }
 
@@ -2020,7 +2020,7 @@ export class Glints {
             // Click on the "Next" button to move to the next page
             await nextPage.click();
           }
-        } while (!isNext && this.COLLECTED < this.LIMIT);
+        } while (!isNext && !this.limitReached());
 
       }
     }
@@ -2096,7 +2096,7 @@ export class Glints {
     rows.sort((a, b) => b.appliedDate.localeCompare(a.appliedDate));
 
     for (let i = 0; i < rows.length; i++) {
-      if (this.COLLECTED == this.LIMIT) {
+      if (this.limitReached()) {
         break;
       }
 
@@ -2217,6 +2217,17 @@ export class Glints {
         console.error("failed to remove file", error);
       }
     }
+  }
+
+  /**
+   * Whether a positive per-run applicant limit has been hit. `limit: 0` means
+   * unlimited, as it does for every other portal. The loops used to compare
+   * `COLLECTED == LIMIT` directly, so with `limit: 0` a run stopped before its
+   * first vacancy ("Found 5 vacancy link(s)" then DONE, observed live
+   * 2026-09-13), and pagination (`COLLECTED < LIMIT`) never went past page one.
+   */
+  limitReached(): boolean {
+    return this.LIMIT > 0 && this.COLLECTED >= this.LIMIT;
   }
 
   private applicantCells(row: any): any {
@@ -2837,7 +2848,7 @@ async convertDateMMDDToYYYY(text: string): Promise<string> {
     // Iterate through the applicants
     for (let i = 0; i < await page.locator(locatorListApplicant).count(); i++) {
       // Break the loop if the limit is reached
-      if (this.COLLECTED == this.LIMIT) {
+      if (this.limitReached()) {
         break;
       }
 

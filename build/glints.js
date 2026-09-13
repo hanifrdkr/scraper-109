@@ -1613,7 +1613,7 @@ class Glints {
                 throw new Error("[GLINTS] Job cards were visible but none contained a manage-candidates link");
             }
             for (const it of listVacancyPage) {
-                if (this.COLLECTED == this.LIMIT) {
+                if (this.limitReached()) {
                     break;
                 }
                 // Some job cards now link to manage-candidates with
@@ -1633,7 +1633,7 @@ class Glints {
                 // any applicant being progressed. Stage tabs are filter-only — a click
                 // never moves an applicant between stages.
                 for (const stage of exports.GLINTS_PIPELINE_STAGES) {
-                    if (this.COLLECTED == this.LIMIT) {
+                    if (this.limitReached()) {
                         break;
                     }
                     // Re-navigate to the vacancy for every stage so pagination state
@@ -1702,7 +1702,7 @@ class Glints {
                             // Click on the "Next" button to move to the next page
                             yield nextPage.click();
                         }
-                    } while (!isNext && this.COLLECTED < this.LIMIT);
+                    } while (!isNext && !this.limitReached());
                 }
             }
             yield browser.close();
@@ -1771,7 +1771,7 @@ class Glints {
             })));
             rows.sort((a, b) => b.appliedDate.localeCompare(a.appliedDate));
             for (let i = 0; i < rows.length; i++) {
-                if (this.COLLECTED == this.LIMIT) {
+                if (this.limitReached()) {
                     break;
                 }
                 const element = lv.nth(rows[i].index);
@@ -1887,6 +1887,16 @@ class Glints {
                 }
             }
         });
+    }
+    /**
+     * Whether a positive per-run applicant limit has been hit. `limit: 0` means
+     * unlimited, as it does for every other portal. The loops used to compare
+     * `COLLECTED == LIMIT` directly, so with `limit: 0` a run stopped before its
+     * first vacancy ("Found 5 vacancy link(s)" then DONE, observed live
+     * 2026-09-13), and pagination (`COLLECTED < LIMIT`) never went past page one.
+     */
+    limitReached() {
+        return this.LIMIT > 0 && this.COLLECTED >= this.LIMIT;
     }
     applicantCells(row) {
         return row.locator('.Polaris-IndexTable__TableCell, td');
@@ -2469,7 +2479,7 @@ class Glints {
             // Iterate through the applicants
             for (let i = 0; i < (yield page.locator(locatorListApplicant).count()); i++) {
                 // Break the loop if the limit is reached
-                if (this.COLLECTED == this.LIMIT) {
+                if (this.limitReached()) {
                     break;
                 }
                 // Get the current applicant element

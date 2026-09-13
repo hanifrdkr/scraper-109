@@ -700,6 +700,61 @@ describe("SupabaseSink", () => {
         expect.anything()
       );
     });
+
+    // The live scoring database grants anon UPDATE on last_seen_at only
+    // (verified 2026-09-13 with a zero-row PATCH: 42501 for email and data).
+    // A re-scrape that carries a contact the stored row lacks therefore gets a
+    // 401 on its backfill, which used to fail the applicant — and, since
+    // KitaLulus rethrows sink errors, the whole cycle.
+    it("degrades a refused contact backfill to a last_seen_at refresh and warns once", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      mockedAxios.get.mockResolvedValueOnce({ data: [{ id: 41, email: null, data: null }] } as never);
+      mockedAxios.patch.mockRejectedValueOnce({ response: { status: 401, data: { code: "42501" } } });
+      const sink = buildSink();
+
+      const id = await sink.upsertCandidate({
+        portal: "kita_lulus",
+        portal_candidate_id: "c-41",
+        email: "new@x.y",
+      });
+
+      expect(id).toBe(41);
+      expect(mockedAxios.patch).toHaveBeenCalledTimes(2);
+      expect(mockedAxios.patch).toHaveBeenNthCalledWith(
+        1,
+        `${URL}/rest/v1/portal_candidates?id=eq.41`,
+        { last_seen_at: expect.any(String), email: "new@x.y" },
+        expect.anything()
+      );
+      expect(mockedAxios.patch).toHaveBeenLastCalledWith(
+        `${URL}/rest/v1/portal_candidates?id=eq.41`,
+        { last_seen_at: expect.any(String) },
+        expect.anything()
+      );
+
+      // A second refused backfill on the same sink does not warn again.
+      mockedAxios.get.mockResolvedValueOnce({ data: [{ id: 42, email: null, data: null }] } as never);
+      mockedAxios.patch.mockRejectedValueOnce({ response: { status: 403 } });
+      await expect(
+        sink.upsertCandidate({ portal: "kita_lulus", portal_candidate_id: "c-42", email: "other@x.y" }),
+      ).resolves.toBe(42);
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
+    it("still fails when even the plain last_seen_at refresh is refused", async () => {
+      mockedAxios.get.mockResolvedValueOnce({ data: [{ id: 43, email: "kept@x.y", data: null }] } as never);
+      mockedAxios.patch.mockRejectedValueOnce({ response: { status: 401 } });
+      const sink = buildSink();
+
+      // Only the failure itself is pinned here: nothing was left to strip, so
+      // the refusal must surface as a sink error rather than being swallowed
+      // (status mapping of real axios errors is covered by the 409 cases).
+      await expect(
+        sink.upsertCandidate({ portal: "kita_lulus", portal_candidate_id: "c-43", email: "kept@x.y" }),
+      ).rejects.toMatchObject({ name: "SupabaseSinkError" });
+      expect(mockedAxios.patch).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("linkApplication", () => {

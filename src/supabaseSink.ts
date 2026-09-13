@@ -558,11 +558,22 @@ export class SupabaseSink {
     return patch;
   }
 
+  /** Latches once so a refused candidate backfill logs one line, not one per applicant. */
+  private warnedCandidateBackfillRefused = false;
+
   /**
    * Refreshes an existing candidate row: last_seen_at plus any fill-empty
    * contact backfill. A 409 on the email column (another row already holds
    * that email under the (portal, email) UNIQUE constraint) retries without
    * the email so the refresh itself never fails the applicant.
+   *
+   * A 401/403 means the database has not granted anon UPDATE on the
+   * backfilled columns. The live scoring database grants anon UPDATE on
+   * last_seen_at only (verified 2026-09-13 with a zero-row PATCH: 42501 for
+   * email and data), so a re-scrape carrying a contact the stored row lacked
+   * used to throw here — failing the applicant and, because KitaLulus rethrows
+   * sink errors, the whole cycle. A refused backfill now degrades to the
+   * last_seen_at refresh alone, logged once.
    */
   private async refreshCandidate(
     row: ExistingCandidateRow,
@@ -570,22 +581,45 @@ export class SupabaseSink {
     email: string | null,
     phone: string | null,
   ): Promise<number> {
+    const refreshedAt = new Date().toISOString();
     const patch: Record<string, unknown> = {
-      last_seen_at: new Date().toISOString(),
+      last_seen_at: refreshedAt,
       ...this.buildContactBackfill(row, c, email, phone),
     };
     const send = (body: Record<string, unknown>) =>
       axios.patch(`${this.url}/rest/v1/portal_candidates?id=eq.${row.id}`, body, {
         headers: this.headers({ Prefer: "return=minimal" }),
       });
+    const statusOf = (error: unknown) => (error as { response?: { status?: number } })?.response?.status;
+    const isRefusal = (error: unknown) => statusOf(error) === 401 || statusOf(error) === 403;
+
+    let body = patch;
     try {
-      await send(patch);
+      await send(body);
+      return row.id;
     } catch (error) {
-      const status = (error as { response?: { status?: number } })?.response?.status;
-      if (status !== 409 || !("email" in patch)) throw error;
-      const { email: _conflicting, ...withoutEmail } = patch;
-      await send(withoutEmail);
+      let failure: unknown = error;
+      if (statusOf(error) === 409 && "email" in body) {
+        const { email: _conflicting, ...withoutEmail } = body;
+        body = withoutEmail;
+        try {
+          await send(body);
+          return row.id;
+        } catch (retryError) {
+          failure = retryError;
+        }
+      }
+      // Nothing left to strip, or not a privilege refusal: a real failure.
+      if (!isRefusal(failure) || Object.keys(body).length === 1) throw failure;
     }
+
+    if (!this.warnedCandidateBackfillRefused) {
+      this.warnedCandidateBackfillRefused = true;
+      console.warn(
+        "[SINK] portal_candidates contact backfill refused (anon lacks UPDATE on email/data) — refreshing last_seen_at only; stored contacts stay as they are.",
+      );
+    }
+    await send({ last_seen_at: refreshedAt });
     return row.id;
   }
 

@@ -112,6 +112,8 @@ class SupabaseSink {
         this.warnedMissingVacancyBackfillGrant = false;
         /** Latches once so a missing description column logs one line, not one per row. */
         this.warnedMissingDescriptionColumn = false;
+        /** Latches once so a refused candidate backfill logs one line, not one per applicant. */
+        this.warnedCandidateBackfillRefused = false;
         this.url = ((_b = (_a = config === null || config === void 0 ? void 0 : config.url) !== null && _a !== void 0 ? _a : process.env.SCORING_SUPABASE_URL) !== null && _b !== void 0 ? _b : "").replace(/\/+$/, "");
         this.anonKey = (_d = (_c = config === null || config === void 0 ? void 0 : config.anonKey) !== null && _c !== void 0 ? _c : process.env.SCORING_SUPABASE_ANON_KEY) !== null && _d !== void 0 ? _d : "";
         this.bucket = (_f = (_e = config === null || config === void 0 ? void 0 : config.bucket) !== null && _e !== void 0 ? _e : process.env.SCORING_SUPABASE_BUCKET) !== null && _f !== void 0 ? _f : "scrape-artifacts";
@@ -436,24 +438,51 @@ class SupabaseSink {
      * contact backfill. A 409 on the email column (another row already holds
      * that email under the (portal, email) UNIQUE constraint) retries without
      * the email so the refresh itself never fails the applicant.
+     *
+     * A 401/403 means the database has not granted anon UPDATE on the
+     * backfilled columns. The live scoring database grants anon UPDATE on
+     * last_seen_at only (verified 2026-09-13 with a zero-row PATCH: 42501 for
+     * email and data), so a re-scrape carrying a contact the stored row lacked
+     * used to throw here — failing the applicant and, because KitaLulus rethrows
+     * sink errors, the whole cycle. A refused backfill now degrades to the
+     * last_seen_at refresh alone, logged once.
      */
     refreshCandidate(row, c, email, phone) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a;
-            const patch = Object.assign({ last_seen_at: new Date().toISOString() }, this.buildContactBackfill(row, c, email, phone));
+            const refreshedAt = new Date().toISOString();
+            const patch = Object.assign({ last_seen_at: refreshedAt }, this.buildContactBackfill(row, c, email, phone));
             const send = (body) => axios_1.default.patch(`${this.url}/rest/v1/portal_candidates?id=eq.${row.id}`, body, {
                 headers: this.headers({ Prefer: "return=minimal" }),
             });
+            const statusOf = (error) => { var _a; return (_a = error === null || error === void 0 ? void 0 : error.response) === null || _a === void 0 ? void 0 : _a.status; };
+            const isRefusal = (error) => statusOf(error) === 401 || statusOf(error) === 403;
+            let body = patch;
             try {
-                yield send(patch);
+                yield send(body);
+                return row.id;
             }
             catch (error) {
-                const status = (_a = error === null || error === void 0 ? void 0 : error.response) === null || _a === void 0 ? void 0 : _a.status;
-                if (status !== 409 || !("email" in patch))
-                    throw error;
-                const { email: _conflicting } = patch, withoutEmail = __rest(patch, ["email"]);
-                yield send(withoutEmail);
+                let failure = error;
+                if (statusOf(error) === 409 && "email" in body) {
+                    const { email: _conflicting } = body, withoutEmail = __rest(body, ["email"]);
+                    body = withoutEmail;
+                    try {
+                        yield send(body);
+                        return row.id;
+                    }
+                    catch (retryError) {
+                        failure = retryError;
+                    }
+                }
+                // Nothing left to strip, or not a privilege refusal: a real failure.
+                if (!isRefusal(failure) || Object.keys(body).length === 1)
+                    throw failure;
             }
+            if (!this.warnedCandidateBackfillRefused) {
+                this.warnedCandidateBackfillRefused = true;
+                console.warn("[SINK] portal_candidates contact backfill refused (anon lacks UPDATE on email/data) — refreshing last_seen_at only; stored contacts stay as they are.");
+            }
+            yield send({ last_seen_at: refreshedAt });
             return row.id;
         });
     }
