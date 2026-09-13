@@ -706,10 +706,12 @@ describe("SupabaseSink", () => {
     // A re-scrape that carries a contact the stored row lacks therefore gets a
     // 401 on its backfill, which used to fail the applicant — and, since
     // KitaLulus rethrows sink errors, the whole cycle.
-    it("degrades a refused contact backfill to a last_seen_at refresh and warns once", async () => {
+    it("degrades a refused contact backfill to a last_seen_at refresh when the fill-blanks function is not deployed", async () => {
       const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
       mockedAxios.get.mockResolvedValueOnce({ data: [{ id: 41, email: null, data: null }] } as never);
       mockedAxios.patch.mockRejectedValueOnce({ response: { status: 401, data: { code: "42501" } } });
+      // The live database has no scrape.backfill_candidate_blanks yet (PGRST202).
+      mockedAxios.post.mockRejectedValueOnce({ response: { status: 404, data: { code: "PGRST202" } } });
       const sink = buildSink();
 
       const id = await sink.upsertCandidate({
@@ -719,6 +721,11 @@ describe("SupabaseSink", () => {
       });
 
       expect(id).toBe(41);
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        `${URL}/rest/v1/rpc/backfill_candidate_blanks`,
+        { p_id: 41, p_email: "new@x.y", p_phone: null, p_cv_object_key: null, p_photo_object_key: null },
+        expect.anything()
+      );
       expect(mockedAxios.patch).toHaveBeenCalledTimes(2);
       expect(mockedAxios.patch).toHaveBeenNthCalledWith(
         1,
@@ -732,14 +739,81 @@ describe("SupabaseSink", () => {
         expect.anything()
       );
 
-      // A second refused backfill on the same sink does not warn again.
+      // A second refused backfill on the same sink neither re-requests the
+      // missing function nor warns again.
+      const postsBefore = mockedAxios.post.mock.calls.length;
       mockedAxios.get.mockResolvedValueOnce({ data: [{ id: 42, email: null, data: null }] } as never);
       mockedAxios.patch.mockRejectedValueOnce({ response: { status: 403 } });
       await expect(
         sink.upsertCandidate({ portal: "kita_lulus", portal_candidate_id: "c-42", email: "other@x.y" }),
       ).resolves.toBe(42);
+      expect(mockedAxios.post.mock.calls.length).toBe(postsBefore);
       expect(warn).toHaveBeenCalledTimes(1);
       warn.mockRestore();
+    });
+
+    it("fills a refused backfill through scrape.backfill_candidate_blanks when it is deployed", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      mockedAxios.get.mockResolvedValueOnce({ data: [{ id: 44, email: null, data: null }] } as never);
+      mockedAxios.patch.mockRejectedValueOnce({ response: { status: 401, data: { code: "42501" } } });
+      mockedAxios.post.mockResolvedValueOnce({ data: null } as never);
+      const sink = buildSink();
+
+      const id = await sink.upsertCandidate({
+        portal: "kita_lulus",
+        portal_candidate_id: "c-44",
+        email: "fill@x.y",
+        phone: "081234567890",
+        cv_object_key: "scrape-artifacts/kita_lulus/cv/abc.pdf",
+      });
+
+      expect(id).toBe(44);
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        `${URL}/rest/v1/rpc/backfill_candidate_blanks`,
+        {
+          p_id: 44,
+          p_email: "fill@x.y",
+          p_phone: "081234567890",
+          p_cv_object_key: "scrape-artifacts/kita_lulus/cv/abc.pdf",
+          p_photo_object_key: null,
+        },
+        expect.anything()
+      );
+      // The function refreshed last_seen_at itself: no degraded second PATCH.
+      expect(mockedAxios.patch).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it("offers a re-scrape's CV and photo references to the fill-blanks function after a successful refresh", async () => {
+      mockedAxios.get.mockResolvedValueOnce({
+        data: [{ id: 45, email: "kept@x.y", data: { contact: { contact_number: "0811" } } }],
+      } as never);
+      mockedAxios.post.mockResolvedValueOnce({ data: null } as never);
+      const sink = buildSink();
+
+      await sink.upsertCandidate({
+        portal: "glints",
+        portal_candidate_id: "c-45",
+        email: "kept@x.y",
+        cv_object_key: "scrape-artifacts/glints/cv/def.pdf",
+        photo_object_key: "scrape-artifacts/glints/photo/ghi.jpg",
+      });
+
+      expect(mockedAxios.patch).toHaveBeenCalledWith(
+        `${URL}/rest/v1/portal_candidates?id=eq.45`,
+        { last_seen_at: expect.any(String) },
+        expect.anything()
+      );
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        `${URL}/rest/v1/rpc/backfill_candidate_blanks`,
+        expect.objectContaining({
+          p_id: 45,
+          p_cv_object_key: "scrape-artifacts/glints/cv/def.pdf",
+          p_photo_object_key: "scrape-artifacts/glints/photo/ghi.jpg",
+        }),
+        expect.anything()
+      );
     });
 
     it("still fails when even the plain last_seen_at refresh is refused", async () => {

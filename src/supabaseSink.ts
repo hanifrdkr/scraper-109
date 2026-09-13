@@ -593,9 +593,15 @@ export class SupabaseSink {
     const statusOf = (error: unknown) => (error as { response?: { status?: number } })?.response?.status;
     const isRefusal = (error: unknown) => statusOf(error) === 401 || statusOf(error) === 403;
 
+    // The scrape's CV/photo references were never part of the direct
+    // backfill; the fill-blanks function below is the only way a stored row
+    // missing them can gain them.
+    const carriesArtifacts = !isBlank(c.cv_object_key) || !isBlank(c.photo_object_key);
+
     let body = patch;
     try {
       await send(body);
+      if (carriesArtifacts) await this.backfillCandidateBlanks(row.id, email, phone, c);
       return row.id;
     } catch (error) {
       let failure: unknown = error;
@@ -604,6 +610,7 @@ export class SupabaseSink {
         body = withoutEmail;
         try {
           await send(body);
+          if (carriesArtifacts) await this.backfillCandidateBlanks(row.id, email, phone, c);
           return row.id;
         } catch (retryError) {
           failure = retryError;
@@ -613,14 +620,63 @@ export class SupabaseSink {
       if (!isRefusal(failure) || Object.keys(body).length === 1) throw failure;
     }
 
+    // The direct backfill was refused. The fill-blanks function fills the same
+    // contacts (and the CV/photo references) server-side without anon holding
+    // UPDATE on those columns, and refreshes last_seen_at itself.
+    if (await this.backfillCandidateBlanks(row.id, email, phone, c)) {
+      return row.id;
+    }
+
     if (!this.warnedCandidateBackfillRefused) {
       this.warnedCandidateBackfillRefused = true;
       console.warn(
-        "[SINK] portal_candidates contact backfill refused (anon lacks UPDATE on email/data) — refreshing last_seen_at only; stored contacts stay as they are.",
+        "[SINK] portal_candidates contact backfill refused (anon lacks UPDATE on email/data) and scrape.backfill_candidate_blanks is not deployed — refreshing last_seen_at only; stored contacts stay as they are.",
       );
     }
     await send({ last_seen_at: refreshedAt });
     return row.id;
+  }
+
+  /** Latches once the fill-blanks function is known to be absent, so it is not re-requested per applicant. */
+  private candidateBlanksFunctionMissing = false;
+
+  /**
+   * Calls scrape.backfill_candidate_blanks (atlas migration
+   * 20260913110000): fills only the blank email, phone, CV and photo
+   * references of an existing candidate and refreshes last_seen_at, never
+   * replacing a stored value. Returns true when the call succeeded, false
+   * when the function is not deployed or refused (callers then degrade), and
+   * never throws — a missing backfill must not fail the applicant.
+   */
+  private async backfillCandidateBlanks(
+    id: number,
+    email: string | null,
+    phone: string | null,
+    c: CandidateInput,
+  ): Promise<boolean> {
+    if (this.candidateBlanksFunctionMissing) return false;
+    try {
+      await axios.post(
+        `${this.url}/rest/v1/rpc/backfill_candidate_blanks`,
+        {
+          p_id: id,
+          p_email: email,
+          p_phone: phone,
+          p_cv_object_key: c.cv_object_key ?? null,
+          p_photo_object_key: c.photo_object_key ?? null,
+        },
+        { headers: this.headers({ Prefer: "return=minimal" }) },
+      );
+      return true;
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })?.response?.status;
+      const code = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
+      // PGRST202: function not found in the schema cache (migration not applied).
+      if (status === 404 || code === "PGRST202") {
+        this.candidateBlanksFunctionMissing = true;
+      }
+      return false;
+    }
   }
 
   /**

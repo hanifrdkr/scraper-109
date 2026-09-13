@@ -114,6 +114,8 @@ class SupabaseSink {
         this.warnedMissingDescriptionColumn = false;
         /** Latches once so a refused candidate backfill logs one line, not one per applicant. */
         this.warnedCandidateBackfillRefused = false;
+        /** Latches once the fill-blanks function is known to be absent, so it is not re-requested per applicant. */
+        this.candidateBlanksFunctionMissing = false;
         this.url = ((_b = (_a = config === null || config === void 0 ? void 0 : config.url) !== null && _a !== void 0 ? _a : process.env.SCORING_SUPABASE_URL) !== null && _b !== void 0 ? _b : "").replace(/\/+$/, "");
         this.anonKey = (_d = (_c = config === null || config === void 0 ? void 0 : config.anonKey) !== null && _c !== void 0 ? _c : process.env.SCORING_SUPABASE_ANON_KEY) !== null && _d !== void 0 ? _d : "";
         this.bucket = (_f = (_e = config === null || config === void 0 ? void 0 : config.bucket) !== null && _e !== void 0 ? _e : process.env.SCORING_SUPABASE_BUCKET) !== null && _f !== void 0 ? _f : "scrape-artifacts";
@@ -456,9 +458,15 @@ class SupabaseSink {
             });
             const statusOf = (error) => { var _a; return (_a = error === null || error === void 0 ? void 0 : error.response) === null || _a === void 0 ? void 0 : _a.status; };
             const isRefusal = (error) => statusOf(error) === 401 || statusOf(error) === 403;
+            // The scrape's CV/photo references were never part of the direct
+            // backfill; the fill-blanks function below is the only way a stored row
+            // missing them can gain them.
+            const carriesArtifacts = !isBlank(c.cv_object_key) || !isBlank(c.photo_object_key);
             let body = patch;
             try {
                 yield send(body);
+                if (carriesArtifacts)
+                    yield this.backfillCandidateBlanks(row.id, email, phone, c);
                 return row.id;
             }
             catch (error) {
@@ -468,6 +476,8 @@ class SupabaseSink {
                     body = withoutEmail;
                     try {
                         yield send(body);
+                        if (carriesArtifacts)
+                            yield this.backfillCandidateBlanks(row.id, email, phone, c);
                         return row.id;
                     }
                     catch (retryError) {
@@ -478,12 +488,52 @@ class SupabaseSink {
                 if (!isRefusal(failure) || Object.keys(body).length === 1)
                     throw failure;
             }
+            // The direct backfill was refused. The fill-blanks function fills the same
+            // contacts (and the CV/photo references) server-side without anon holding
+            // UPDATE on those columns, and refreshes last_seen_at itself.
+            if (yield this.backfillCandidateBlanks(row.id, email, phone, c)) {
+                return row.id;
+            }
             if (!this.warnedCandidateBackfillRefused) {
                 this.warnedCandidateBackfillRefused = true;
-                console.warn("[SINK] portal_candidates contact backfill refused (anon lacks UPDATE on email/data) — refreshing last_seen_at only; stored contacts stay as they are.");
+                console.warn("[SINK] portal_candidates contact backfill refused (anon lacks UPDATE on email/data) and scrape.backfill_candidate_blanks is not deployed — refreshing last_seen_at only; stored contacts stay as they are.");
             }
             yield send({ last_seen_at: refreshedAt });
             return row.id;
+        });
+    }
+    /**
+     * Calls scrape.backfill_candidate_blanks (atlas migration
+     * 20260913110000): fills only the blank email, phone, CV and photo
+     * references of an existing candidate and refreshes last_seen_at, never
+     * replacing a stored value. Returns true when the call succeeded, false
+     * when the function is not deployed or refused (callers then degrade), and
+     * never throws — a missing backfill must not fail the applicant.
+     */
+    backfillCandidateBlanks(id, email, phone, c) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b, _c, _d, _e;
+            if (this.candidateBlanksFunctionMissing)
+                return false;
+            try {
+                yield axios_1.default.post(`${this.url}/rest/v1/rpc/backfill_candidate_blanks`, {
+                    p_id: id,
+                    p_email: email,
+                    p_phone: phone,
+                    p_cv_object_key: (_a = c.cv_object_key) !== null && _a !== void 0 ? _a : null,
+                    p_photo_object_key: (_b = c.photo_object_key) !== null && _b !== void 0 ? _b : null,
+                }, { headers: this.headers({ Prefer: "return=minimal" }) });
+                return true;
+            }
+            catch (error) {
+                const status = (_c = error === null || error === void 0 ? void 0 : error.response) === null || _c === void 0 ? void 0 : _c.status;
+                const code = (_e = (_d = error === null || error === void 0 ? void 0 : error.response) === null || _d === void 0 ? void 0 : _d.data) === null || _e === void 0 ? void 0 : _e.code;
+                // PGRST202: function not found in the schema cache (migration not applied).
+                if (status === 404 || code === "PGRST202") {
+                    this.candidateBlanksFunctionMissing = true;
+                }
+                return false;
+            }
         });
     }
     /**
