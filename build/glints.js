@@ -1814,17 +1814,51 @@ class Glints {
             return moved;
         });
     }
+    /**
+     * Finds the control that moves the open row to Terhubung. The live menu is
+     * two-level (third live run, 2026-09-13): "Pindahkan ke" opens a stage list
+     * ("Terhubung", "Wawancara", "Negosiasi", "Direkrut", "Tolak"…), while the
+     * page's stage tabs carry the same word with a count ("Terhubung38"). Only a
+     * visible item whose clickable element reads exactly "Terhubung" and that is
+     * not inside a tab list is returned; every other stage — "Tolak" included —
+     * is unmatchable. A single-level "Pindahkan ke Terhubung" item still wins.
+     */
     findTerhubungMoveItem(page) {
         return __awaiter(this, void 0, void 0, function* () {
-            const candidates = [
+            const singleLevel = [
                 page.getByRole("menuitem", { name: Glints.TERHUBUNG_MOVE_LABEL }),
                 page.getByRole("button", { name: Glints.TERHUBUNG_MOVE_LABEL }),
                 page.getByText(Glints.TERHUBUNG_MOVE_LABEL),
             ];
-            for (const locator of candidates) {
+            for (const locator of singleLevel) {
                 const first = locator.first();
                 if ((yield first.count()) > 0 && (yield first.isVisible().catch(() => false)))
                     return first;
+            }
+            const trigger = page.getByText(Glints.MOVE_SUBMENU_LABEL).first();
+            if ((yield trigger.count()) === 0 || !(yield trigger.isVisible().catch(() => false)))
+                return null;
+            yield trigger.hover().catch(() => undefined);
+            yield trigger.click({ timeout: 10000 }).catch(() => undefined);
+            yield page.waitForTimeout(800);
+            const stageItems = page.getByText(Glints.TERHUBUNG_STAGE_LABEL);
+            const count = yield stageItems.count();
+            for (let i = 0; i < count; i++) {
+                const item = stageItems.nth(i);
+                if (!(yield item.isVisible().catch(() => false)))
+                    continue;
+                const isMenuItem = yield item
+                    .evaluate((el) => {
+                    var _a;
+                    if (el.closest('[role="tablist"]'))
+                        return false;
+                    const clickable = (_a = el.closest('button, [role="tab"], [role="menuitem"], [role="option"], a, li')) !== null && _a !== void 0 ? _a : el;
+                    const text = (clickable.textContent || "").replace(/\s+/g, " ").trim();
+                    return /^(Terhubung|Connected)$/i.test(text);
+                })
+                    .catch(() => false);
+                if (isMenuItem)
+                    return item;
             }
             return null;
         });
@@ -3260,3 +3294,7 @@ exports.Glints = Glints;
  * can ever be clicked by the promote flow.
  */
 Glints.TERHUBUNG_MOVE_LABEL = /^\s*(Pindahkan ke Terhubung|Move to Connected)\s*$/i;
+/** The row menu's submenu trigger that lists the pipeline stages. */
+Glints.MOVE_SUBMENU_LABEL = /^\s*(Pindahkan ke|Move to)\s*$/i;
+/** The Terhubung stage as listed inside that submenu — exact, no count. */
+Glints.TERHUBUNG_STAGE_LABEL = /^\s*(Terhubung|Connected)\s*$/i;

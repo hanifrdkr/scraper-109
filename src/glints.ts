@@ -2131,15 +2131,51 @@ export class Glints {
     return moved;
   }
 
+  /** The row menu's submenu trigger that lists the pipeline stages. */
+  static readonly MOVE_SUBMENU_LABEL = /^\s*(Pindahkan ke|Move to)\s*$/i;
+  /** The Terhubung stage as listed inside that submenu — exact, no count. */
+  static readonly TERHUBUNG_STAGE_LABEL = /^\s*(Terhubung|Connected)\s*$/i;
+
+  /**
+   * Finds the control that moves the open row to Terhubung. The live menu is
+   * two-level (third live run, 2026-09-13): "Pindahkan ke" opens a stage list
+   * ("Terhubung", "Wawancara", "Negosiasi", "Direkrut", "Tolak"…), while the
+   * page's stage tabs carry the same word with a count ("Terhubung38"). Only a
+   * visible item whose clickable element reads exactly "Terhubung" and that is
+   * not inside a tab list is returned; every other stage — "Tolak" included —
+   * is unmatchable. A single-level "Pindahkan ke Terhubung" item still wins.
+   */
   private async findTerhubungMoveItem(page: any): Promise<any | null> {
-    const candidates = [
+    const singleLevel = [
       page.getByRole("menuitem", { name: Glints.TERHUBUNG_MOVE_LABEL }),
       page.getByRole("button", { name: Glints.TERHUBUNG_MOVE_LABEL }),
       page.getByText(Glints.TERHUBUNG_MOVE_LABEL),
     ];
-    for (const locator of candidates) {
+    for (const locator of singleLevel) {
       const first = locator.first();
       if ((await first.count()) > 0 && (await first.isVisible().catch(() => false))) return first;
+    }
+
+    const trigger = page.getByText(Glints.MOVE_SUBMENU_LABEL).first();
+    if ((await trigger.count()) === 0 || !(await trigger.isVisible().catch(() => false))) return null;
+    await trigger.hover().catch(() => undefined);
+    await trigger.click({ timeout: 10000 }).catch(() => undefined);
+    await page.waitForTimeout(800);
+
+    const stageItems = page.getByText(Glints.TERHUBUNG_STAGE_LABEL);
+    const count = await stageItems.count();
+    for (let i = 0; i < count; i++) {
+      const item = stageItems.nth(i);
+      if (!(await item.isVisible().catch(() => false))) continue;
+      const isMenuItem = await item
+        .evaluate((el: Element) => {
+          if (el.closest('[role="tablist"]')) return false;
+          const clickable = el.closest('button, [role="tab"], [role="menuitem"], [role="option"], a, li') ?? el;
+          const text = (clickable.textContent || "").replace(/\s+/g, " ").trim();
+          return /^(Terhubung|Connected)$/i.test(text);
+        })
+        .catch(() => false);
+      if (isMenuItem) return item;
     }
     return null;
   }

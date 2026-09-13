@@ -7,8 +7,12 @@ import { Glints, GlintsConfigJson } from "../src/glints";
 // human-triggered scrapview action that moves NEW applicants to Terhubung via
 // each row's three-dot menu and then scrapes them. Moves are visible in the
 // employer's pipeline and cannot be undone by the scraper, so the flow may
-// only ever click the exact "Pindahkan ke Terhubung" item, must respect its
-// budget, and must stop — clicking nothing else — when that item is absent.
+// only ever click the exact Terhubung move, must respect its budget, and must
+// stop — clicking no stage at all — when that item is absent.
+//
+// Live menu shape (third live run): a two-level menu, "Pindahkan ke" opening
+// a stage list ("Terhubung", "Wawancara", "Negosiasi", "Direkrut", "Tolak"),
+// while the page's stage tabs show the same word with a count ("Terhubung38").
 
 function makeConfig(): GlintsConfigJson {
   return {
@@ -23,9 +27,9 @@ function makeConfig(): GlintsConfigJson {
   };
 }
 
-describe("Glints.isTerhubungMoveLabel", () => {
+describe("Glints move labels", () => {
   it.each([["Pindahkan ke Terhubung"], ["  pindahkan ke terhubung "], ["Move to Connected"]])(
-    "accepts %j",
+    "isTerhubungMoveLabel accepts %j",
     (label) => {
       expect(Glints.isTerhubungMoveLabel(label)).toBe(true);
     },
@@ -39,8 +43,16 @@ describe("Glints.isTerhubungMoveLabel", () => {
     ["Move to Rejected"],
     ["Pindahkan ke Terhubung sekarang"],
     [""],
-  ])("rejects %j", (label) => {
+  ])("isTerhubungMoveLabel rejects %j", (label) => {
     expect(Glints.isTerhubungMoveLabel(label)).toBe(false);
+  });
+
+  it("matches the submenu trigger and the Terhubung stage exactly", () => {
+    expect(Glints.MOVE_SUBMENU_LABEL.test("Pindahkan ke")).toBe(true);
+    expect(Glints.MOVE_SUBMENU_LABEL.test("Pindahkan ke Terhubung")).toBe(false);
+    expect(Glints.TERHUBUNG_STAGE_LABEL.test("Terhubung")).toBe(true);
+    expect(Glints.TERHUBUNG_STAGE_LABEL.test("Terhubung38")).toBe(false);
+    expect(Glints.TERHUBUNG_STAGE_LABEL.test("Tolak")).toBe(false);
   });
 });
 
@@ -58,29 +70,68 @@ describe("Glints.enablePromoteMode", () => {
   });
 });
 
-/**
- * A NEW-stage list: `newApplicants` rows, each with a trailing menu button
- * whose menu offers `menuLabels`. Clicking the Terhubung item removes the
- * first row, like the dashboard does. Every click is recorded.
- */
-function fakeNewList(newApplicants: number, menuLabels: string[], placeholderRows = 0) {
-  const state = { rows: newApplicants, menuOpen: false, clicks: [] as string[], gotos: [] as string[] };
+type FakeOptions = {
+  /** Items shown when a row's three-dot menu is open. */
+  menu: string[];
+  /** Items shown after clicking the "Pindahkan ke" trigger. */
+  submenu?: string[];
+  /** One-cell placeholder rows rendered before the applicant rows. */
+  placeholderRows?: number;
+  /** Stage tab labels always visible on the page (inside a tab list when `inTabList`). */
+  tabs?: Array<{ label: string; inTabList: boolean }>;
+};
 
-  const menuItem = (matcher: RegExp) => ({
-    first: () => {
-      const label = menuLabels.find((l) => matcher.test(l));
-      return {
-        count: async () => (state.menuOpen && label ? 1 : 0),
-        isVisible: async () => state.menuOpen && Boolean(label),
-        click: async () => {
-          if (!label) throw new Error("click on missing menu item");
-          state.clicks.push(label);
-          state.menuOpen = false;
-          if (Glints.isTerhubungMoveLabel(label)) state.rows = Math.max(0, state.rows - 1);
-        },
-      };
+/**
+ * A NEW-stage list with a row menu, an optional "Pindahkan ke" submenu and the
+ * page's stage tabs. Moving an applicant (the single-level item, or the
+ * submenu's "Terhubung") removes one row. Every click is recorded.
+ */
+function fakeNewList(newApplicants: number, options: FakeOptions) {
+  const { menu, submenu = [], placeholderRows = 0, tabs = [] } = options;
+  const state = {
+    rows: newApplicants,
+    menuOpen: false,
+    submenuOpen: false,
+    clicks: [] as string[],
+    gotos: [] as string[],
+  };
+
+  type Item = { label: string; visible: () => boolean; tab: boolean };
+  const allItems = (): Item[] => [
+    ...menu.map((label) => ({ label, visible: () => state.menuOpen, tab: false })),
+    ...submenu.map((label) => ({ label, visible: () => state.submenuOpen, tab: false })),
+    ...tabs.map((t) => ({ label: t.label, visible: () => true, tab: t.inTabList })),
+  ];
+
+  const element = (item: Item | undefined) => ({
+    count: async () => (item ? 1 : 0),
+    isVisible: async () => Boolean(item && item.visible()),
+    hover: async () => undefined,
+    // findTerhubungMoveItem asks whether this is a real menu item (not a tab).
+    evaluate: async () => Boolean(item && !item.tab && Glints.TERHUBUNG_STAGE_LABEL.test(item.label)),
+    click: async () => {
+      if (!item) throw new Error("click on missing element");
+      state.clicks.push(item.tab ? `tab:${item.label}` : item.label);
+      if (Glints.MOVE_SUBMENU_LABEL.test(item.label)) {
+        state.submenuOpen = true;
+        return;
+      }
+      const isMove =
+        Glints.isTerhubungMoveLabel(item.label) || (state.submenuOpen && Glints.TERHUBUNG_STAGE_LABEL.test(item.label) && !item.tab);
+      state.menuOpen = false;
+      state.submenuOpen = false;
+      if (isMove) state.rows = Math.max(0, state.rows - 1);
     },
   });
+
+  const byMatcher = (matcher: RegExp) => {
+    const matches = () => allItems().filter((item) => matcher.test(item.label));
+    return {
+      first: () => element(matches().find((item) => item.visible()) ?? matches()[0]),
+      count: async () => matches().length,
+      nth: (index: number) => element(matches()[index]),
+    };
+  };
 
   const page = {
     goto: async (url: string) => {
@@ -91,20 +142,19 @@ function fakeNewList(newApplicants: number, menuLabels: string[], placeholderRow
       press: async (key: string) => {
         state.clicks.push(`key:${key}`);
         state.menuOpen = false;
+        state.submenuOpen = false;
       },
     },
-    evaluate: async () => menuLabels,
+    evaluate: async () => [...menu, ...submenu],
     getByTestId: () => ({ last: () => ({ isVisible: async () => false }) }),
-    getByRole: (_role: string, options: { name: RegExp }) => menuItem(options.name),
-    getByText: (matcher: RegExp) => menuItem(matcher),
+    getByRole: (_role: string, opts: { name: RegExp }) => byMatcher(opts.name),
+    getByText: (matcher: RegExp) => byMatcher(matcher),
     locator: (selector: string) => {
       if (selector === '[data-testid="modal-close-btn"]') return { count: async () => 0 };
       if (selector.includes("EmptySearchResultWrapper")) return { count: async () => (state.rows === 0 ? 1 : 0) };
-      // Placeholder rows (one cell, no controls) render first, like the
-      // hydrating dashboard table; applicant rows carry the full cell set.
       const row = (index: number) => ({
-        locator: (selector: string) =>
-          selector.includes("TableCell")
+        locator: (inner: string) =>
+          inner.includes("TableCell")
             ? { count: async () => (index < placeholderRows ? 1 : 3) }
             : {
                 last: () => ({
@@ -126,6 +176,13 @@ function fakeNewList(newApplicants: number, menuLabels: string[], placeholderRow
   return { page, state };
 }
 
+const LIVE_MENU = ["Pindahkan ke", "Tolak", "Edit"];
+const LIVE_SUBMENU = ["Terhubung", "Skill & Psikotes", "Wawancara", "Negosiasi", "Direkrut"];
+const LIVE_TABS = [
+  { label: "Belum Sesuai30", inTabList: true },
+  { label: "Terhubung38", inTabList: true },
+];
+
 describe("Glints.promoteNewApplicants", () => {
   const vacancyUrl = new URL(
     "https://employers.glints.id/manage-candidates?jid=ebf41bfc-68e4-49f8-b6f9-894ba41a4e7a&source=dashboard_job_card",
@@ -140,50 +197,84 @@ describe("Glints.promoteNewApplicants", () => {
     jest.restoreAllMocks();
   });
 
-  it("opens the vacancy's NEW list and moves exactly its budget through each row's menu", async () => {
+  it("moves through the live two-level menu: row menu, Pindahkan ke, Terhubung — nothing else", async () => {
     const scraper = new Glints(makeConfig());
-    const { page, state } = fakeNewList(5, ["Lihat Profil", "Pindahkan ke Terhubung", "Pindahkan ke Tidak Sesuai"]);
+    const { page, state } = fakeNewList(5, { menu: LIVE_MENU, submenu: LIVE_SUBMENU, tabs: LIVE_TABS });
 
     await expect(scraper.promoteNewApplicants(page, vacancyUrl, 2)).resolves.toBe(2);
 
     expect(new URL(state.gotos[0]).searchParams.get("status")).toBe("NEW");
-    expect(state.clicks).toEqual(["row-menu", "Pindahkan ke Terhubung", "row-menu", "Pindahkan ke Terhubung"]);
+    expect(state.clicks).toEqual(["row-menu", "Pindahkan ke", "Terhubung", "row-menu", "Pindahkan ke", "Terhubung"]);
+    expect(state.clicks).not.toContain("Tolak");
+    expect(state.clicks.some((c) => c.startsWith("tab:"))).toBe(false);
     expect(state.rows).toBe(3);
     expect(scraper.getPromotedCount()).toBe(2);
   });
 
-  it("stops when the NEW list runs out before the budget", async () => {
+  it("never picks a stage tab that also reads Terhubung", async () => {
     const scraper = new Glints(makeConfig());
-    const { page, state } = fakeNewList(1, ["Pindahkan ke Terhubung"]);
+    const { page, state } = fakeNewList(2, {
+      menu: LIVE_MENU,
+      submenu: ["Wawancara", "Negosiasi"],
+      tabs: [{ label: "Terhubung", inTabList: true }],
+    });
 
-    await expect(scraper.promoteNewApplicants(page, vacancyUrl, 5)).resolves.toBe(1);
-    expect(state.clicks.filter((c) => c === "Pindahkan ke Terhubung")).toHaveLength(1);
+    await expect(scraper.promoteNewApplicants(page, vacancyUrl, 1)).resolves.toBe(0);
+
+    expect(state.clicks).toEqual(["row-menu", "Pindahkan ke", "key:Escape"]);
+    expect(state.rows).toBe(2);
   });
 
-  it("clicks no stage action at all when the row menu has no exact Terhubung item", async () => {
+  it("moves nobody when the stage submenu has no Terhubung", async () => {
     const scraper = new Glints(makeConfig());
-    const { page, state } = fakeNewList(3, ["Lihat Profil", "Pindahkan ke Tidak Sesuai", "Pindahkan ke Wawancara"]);
+    const { page, state } = fakeNewList(3, { menu: LIVE_MENU, submenu: ["Wawancara", "Direkrut"], tabs: LIVE_TABS });
+
+    await expect(scraper.promoteNewApplicants(page, vacancyUrl, 3)).resolves.toBe(0);
+
+    expect(state.clicks).toEqual(["row-menu", "Pindahkan ke", "key:Escape"]);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Options seen"));
+  });
+
+  it("still accepts a single-level Pindahkan ke Terhubung item", async () => {
+    const scraper = new Glints(makeConfig());
+    const { page, state } = fakeNewList(2, { menu: ["Lihat Profil", "Pindahkan ke Terhubung", "Tolak"] });
+
+    await expect(scraper.promoteNewApplicants(page, vacancyUrl, 1)).resolves.toBe(1);
+
+    expect(state.clicks).toEqual(["row-menu", "Pindahkan ke Terhubung"]);
+  });
+
+  it("stops when the NEW list runs out before the budget", async () => {
+    const scraper = new Glints(makeConfig());
+    const { page, state } = fakeNewList(1, { menu: LIVE_MENU, submenu: LIVE_SUBMENU });
+
+    await expect(scraper.promoteNewApplicants(page, vacancyUrl, 5)).resolves.toBe(1);
+    expect(state.clicks.filter((c) => c === "Terhubung")).toHaveLength(1);
+  });
+
+  it("clicks no stage at all when the row menu offers neither move form", async () => {
+    const scraper = new Glints(makeConfig());
+    const { page, state } = fakeNewList(3, { menu: ["Lihat Profil", "Tolak", "Edit"] });
 
     await expect(scraper.promoteNewApplicants(page, vacancyUrl, 3)).resolves.toBe(0);
 
     expect(state.clicks).toEqual(["row-menu", "key:Escape"]);
     expect(state.rows).toBe(3);
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Options seen"));
   });
 
   it("skips one-cell placeholder rows and acts on the first real applicant row", async () => {
     const scraper = new Glints(makeConfig());
-    const { page, state } = fakeNewList(2, ["Pindahkan ke Terhubung"], 1);
+    const { page, state } = fakeNewList(2, { menu: LIVE_MENU, submenu: LIVE_SUBMENU, placeholderRows: 1 });
 
     await expect(scraper.promoteNewApplicants(page, vacancyUrl, 1)).resolves.toBe(1);
 
-    expect(state.clicks).toEqual(["row-menu", "Pindahkan ke Terhubung"]);
+    expect(state.clicks).toEqual(["row-menu", "Pindahkan ke", "Terhubung"]);
     expect(state.clicks).not.toContain("placeholder-row-menu");
   });
 
   it("does nothing with a zero budget", async () => {
     const scraper = new Glints(makeConfig());
-    const { page, state } = fakeNewList(3, ["Pindahkan ke Terhubung"]);
+    const { page, state } = fakeNewList(3, { menu: LIVE_MENU, submenu: LIVE_SUBMENU });
 
     await expect(scraper.promoteNewApplicants(page, vacancyUrl, 0)).resolves.toBe(0);
     expect(state.gotos).toEqual([]);
