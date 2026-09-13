@@ -72,11 +72,28 @@ app.use("/storage", express_1.default.static(path_1.default.join(ROOT_DIR, "stor
 for (const name of SCRAPERS) {
     scraperState[name] = { status: "idle", log: [] };
 }
+/**
+ * Every portal config in this repo is headed (`headless: false`), which is
+ * why the production per-portal containers run through the `xvfb:*` scripts.
+ * Spawning `ts-node src/server.ts <portal>` bare inside this container has
+ * no X server, so Chromium dies at launch with "Missing X server or
+ * $DISPLAY" and burns the whole retry budget. Wrap the child in `xvfb-run`
+ * wherever one exists (the deployed image), and fall back to the bare
+ * command on a dev machine that has no xvfb — where a real display is
+ * usually available anyway.
+ */
+function hasXvfb() {
+    const result = (0, child_process_1.spawnSync)("which", ["xvfb-run"]);
+    return result.status === 0;
+}
 function runScraper(name) {
     if (scraperState[name].status === "running")
         return;
     scraperState[name] = { status: "running", log: [] };
-    const proc = (0, child_process_1.spawn)(TS_NODE, [SERVER, name], { cwd: ROOT_DIR });
+    const [command, args] = hasXvfb()
+        ? ["xvfb-run", ["-a", TS_NODE, SERVER, name]]
+        : [TS_NODE, [SERVER, name]];
+    const proc = (0, child_process_1.spawn)(command, args, { cwd: ROOT_DIR });
     scraperProcesses[name] = proc;
     scraperState[name].pid = proc.pid;
     const append = (data) => {
