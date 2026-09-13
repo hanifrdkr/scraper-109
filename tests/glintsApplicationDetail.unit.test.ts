@@ -49,6 +49,7 @@ describe("parseGlintsApplicationDetail", () => {
     expect(detail).toEqual({
       applicantId: "00000000-1111-4222-8333-444444444444",
       applicantName: "Fixtura Sintetis",
+      jobDescription: "",
       email: "candidate@example.com",
       whatsappNumber: "+628111234567",
       resumeKey: "0123456789abcdef0123456789abcdef.pdf",
@@ -73,6 +74,7 @@ describe("parseGlintsApplicationDetail", () => {
     expect(detail).toEqual({
       applicantId: "abc-123",
       applicantName: "",
+      jobDescription: "",
       email: "",
       whatsappNumber: "08123456789",
       resumeKey: "",

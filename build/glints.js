@@ -35,7 +35,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Glints = exports.replayableGlintsHeaders = exports.descriptionKeyPaths = exports.normalizeGlintsApplicantName = exports.stripGlintsContactMask = exports.parseGlintsApplicationDetail = exports.classifyGlintsLoginResult = exports.GLINTS_VERIFICATION_SUBMIT_TEXT_SELECTOR = exports.GLINTS_VERIFICATION_SUBMIT_SELECTOR = exports.GLINTS_VERIFICATION_METHOD_SELECTOR = exports.GLINTS_VERIFICATION_EMAIL_BUTTON_SELECTOR = exports.normalizeCompanyName = exports.resetGlintsLoginState = exports.glintsSessionStore = exports.GLINTS_PIPELINE_STAGES = exports.GLINTS_APPLICANT_ROW_SELECTOR = void 0;
+exports.Glints = exports.replayableGlintsHeaders = exports.descriptionKeyPaths = exports.normalizeGlintsApplicantName = exports.stripGlintsContactMask = exports.parseGlintsApplicationDetail = exports.glintsDescriptionText = exports.classifyGlintsLoginResult = exports.GLINTS_VERIFICATION_SUBMIT_TEXT_SELECTOR = exports.GLINTS_VERIFICATION_SUBMIT_SELECTOR = exports.GLINTS_VERIFICATION_METHOD_SELECTOR = exports.GLINTS_VERIFICATION_EMAIL_BUTTON_SELECTOR = exports.normalizeCompanyName = exports.resetGlintsLoginState = exports.glintsSessionStore = exports.GLINTS_PIPELINE_STAGES = exports.GLINTS_APPLICANT_ROW_SELECTOR = void 0;
 const playwright_1 = __importDefault(require("playwright"));
 const fs_1 = __importDefault(require("fs"));
 const axios_1 = __importDefault(require("axios"));
@@ -230,13 +230,69 @@ function classifyGlintsLoginResult(observation) {
 }
 exports.classifyGlintsLoginResult = classifyGlintsLoginResult;
 /**
+ * Readable text from a Glints description field. The field's format was only
+ * observed by length, so this accepts each form Glints' editors produce:
+ * Draft.js raw content (`{ "blocks": [{ "text": … }] }`, as a JSON string or
+ * an object), HTML, or plain text. Anything else is "".
+ */
+function glintsDescriptionText(raw) {
+    var _a;
+    const fromBlocks = (value) => {
+        const blocks = value === null || value === void 0 ? void 0 : value.blocks;
+        if (!Array.isArray(blocks))
+            return null;
+        return blocks
+            .map((block) => {
+            const text = block === null || block === void 0 ? void 0 : block.text;
+            return typeof text === "string" ? text : "";
+        })
+            .join("\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+    };
+    if (raw !== null && typeof raw === "object")
+        return (_a = fromBlocks(raw)) !== null && _a !== void 0 ? _a : "";
+    if (typeof raw !== "string")
+        return "";
+    const text = raw.trim();
+    if (text === "")
+        return "";
+    if (text.startsWith("{")) {
+        try {
+            const blocksText = fromBlocks(JSON.parse(text));
+            if (blocksText !== null)
+                return blocksText;
+        }
+        catch (_b) {
+            // Not JSON after all: treat it as markup or plain text below.
+        }
+    }
+    if (/<[a-z][\s\S]*>/i.test(text)) {
+        return text
+            .replace(/<\s*br\s*\/?>/gi, "\n")
+            .replace(/<\/(p|div|li|h[1-6])\s*>/gi, "\n")
+            .replace(/<[^>]+>/g, "")
+            .replace(/&nbsp;/g, " ")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/&amp;/g, "&")
+            .replace(/[ \t]+\n/g, "\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+    }
+    return text;
+}
+exports.glintsDescriptionText = glintsDescriptionText;
+/**
  * Parses the application-detail API payload into the fields the scraper needs.
  * Pure so the mapping is unit-testable against captured payload shapes; returns
  * null when the payload carries no data object at all (endpoint drift), which
  * callers treat as "fall back to DOM extraction".
  */
 function parseGlintsApplicationDetail(payload) {
-    var _a;
+    var _a, _b, _c;
     const data = payload === null || payload === void 0 ? void 0 : payload.data;
     if (typeof data !== "object" || data === null)
         return null;
@@ -265,6 +321,7 @@ function parseGlintsApplicationDetail(payload) {
         resumeKey: str(d.resume),
         birthDate: str(applicant.birthDate).slice(0, 10),
         gender: str(applicant.gender),
+        jobDescription: glintsDescriptionText((_c = (_b = d.links) === null || _b === void 0 ? void 0 : _b.job) === null || _c === void 0 ? void 0 : _c.descriptionRaw),
     };
 }
 exports.parseGlintsApplicationDetail = parseGlintsApplicationDetail;
@@ -365,17 +422,6 @@ class Glints {
         this.VERIFICATION_CODE_WAIT_MS = 10 * 60000;
         this.VERIFICATION_POLL_INTERVAL_MS = 15000;
         this.VERIFICATION_REQUEST_MIN_INTERVAL_MS = 30 * 60000;
-        /**
-         * Downloads the applicant's resume through the dashboard's own
-         * GET /api/s3/download endpoint (the same call the modal's CV tab makes) and
-         * stores it locally for the sink upload. Failures degrade to "" so a missing
-         * resume never fails the row; the signed URL is never logged.
-         *
-         * @param page - The page whose session performs the API request.
-         * @param resumeKey - The resume file key from the application detail.
-         * @param filename - Display filename for the content-disposition, no path.
-         * @returns The local file path of the stored resume, or "".
-         */
         /**
          * Request headers the dashboard's own successful API calls carried, replayed
          * on the resume download. Every download returned 401 on 2026-09-13 while
@@ -1296,8 +1342,41 @@ class Glints {
             }
         });
     }
+    /**
+     * Writes resume bytes returned directly by the download endpoint into the
+     * same storage directory fetchAndStore uses, with an extension from the
+     * file's signature or content type.
+     */
+    storeResumeBytes(bytes, contentType) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const extension = bytes.subarray(0, 4).toString() === "%PDF" || /pdf/i.test(contentType)
+                ? "pdf"
+                : /wordprocessingml/i.test(contentType)
+                    ? "docx"
+                    : /msword/i.test(contentType)
+                        ? "doc"
+                        : "pdf";
+            const storageDir = path_1.default.join(__dirname, "../storage/");
+            yield fs_1.default.promises.mkdir(storageDir, { recursive: true });
+            const filePath = path_1.default.join(storageDir, `${Date.now()}.${extension}`);
+            yield fs_1.default.promises.writeFile(filePath, bytes);
+            return filePath;
+        });
+    }
+    /**
+     * Downloads the applicant's resume through the dashboard's own
+     * GET /api/s3/download endpoint (the same call the modal's CV tab makes) and
+     * stores it locally for the sink upload. Failures degrade to "" so a missing
+     * resume never fails the row; the signed URL is never logged.
+     *
+     * @param page - The page whose session performs the API request.
+     * @param resumeKey - The resume file key from the application detail.
+     * @param filename - Display filename for the content-disposition, no path.
+     * @returns The local file path of the stored resume, or "".
+     */
     fetchResumeViaApi(page, resumeKey, filename) {
         return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b, _c;
             try {
                 const response = yield page.request.get("https://employers.glints.id/api/s3/download", {
                     params: { key: resumeKey, label: "resume", filename: `${filename}.pdf` },
@@ -1310,7 +1389,16 @@ class Glints {
                     console.warn(`[GLINTS] resume download endpoint returned status ${response.status()} (replayed dashboard headers: ${replayed.length ? replayed.join(",") : "none captured"})`);
                     return "";
                 }
-                const body = yield response.json();
+                // The endpoint answers with the file itself (observed live 2026-09-13:
+                // "%PDF-1.4…"), not the JSON { url } it was assumed to return, so
+                // response.json() threw on every resume. Store the bytes directly; the
+                // signed-URL form stays as the fallback for a JSON answer.
+                const contentType = String((_c = (_b = (_a = response.headers) === null || _a === void 0 ? void 0 : _a.call(response)) === null || _b === void 0 ? void 0 : _b["content-type"]) !== null && _c !== void 0 ? _c : "");
+                const bytes = typeof response.body === "function" ? yield response.body() : null;
+                if (bytes && bytes.length > 0 && (bytes.subarray(0, 4).toString() === "%PDF" || !/json/i.test(contentType))) {
+                    return yield this.storeResumeBytes(bytes, contentType);
+                }
+                const body = bytes ? JSON.parse(bytes.toString("utf8")) : yield response.json();
                 const signedUrl = typeof (body === null || body === void 0 ? void 0 : body.url) === "string" ? body.url : "";
                 if (signedUrl === "")
                     return "";
@@ -2031,7 +2119,10 @@ class Glints {
                     const applicant = {
                         portal: "glints",
                         type: "applicant",
-                        vacancy_description: vacancyDescription,
+                        // The edit-page read finds nothing on the current dashboard (no job
+                        // card exposes an edit link); the application-detail payload names
+                        // the job's own description for every applicant.
+                        vacancy_description: vacancyDescription || (detail === null || detail === void 0 ? void 0 : detail.jobDescription) || "",
                         applied_for: job,
                         applied_date: appliedDate,
                         name: name,

@@ -425,6 +425,66 @@ export interface GlintsApplicationDetail {
   birthDate: string;
   /** MALE / FEMALE / "" */
   gender: string;
+  /**
+   * The job's own description, from `data.links.job.descriptionRaw`. The
+   * employer job list exposes no edit link and the public job page is
+   * firewalled, so this payload — already captured on every modal open — is
+   * the one readable source (found by the API shape diagnostic, 2026-09-13).
+   */
+  jobDescription: string;
+}
+
+/**
+ * Readable text from a Glints description field. The field's format was only
+ * observed by length, so this accepts each form Glints' editors produce:
+ * Draft.js raw content (`{ "blocks": [{ "text": … }] }`, as a JSON string or
+ * an object), HTML, or plain text. Anything else is "".
+ */
+export function glintsDescriptionText(raw: unknown): string {
+  const fromBlocks = (value: unknown): string | null => {
+    const blocks = (value as { blocks?: unknown } | null)?.blocks;
+    if (!Array.isArray(blocks)) return null;
+    return blocks
+      .map((block) => {
+        const text = (block as { text?: unknown } | null)?.text;
+        return typeof text === "string" ? text : "";
+      })
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  };
+
+  if (raw !== null && typeof raw === "object") return fromBlocks(raw) ?? "";
+  if (typeof raw !== "string") return "";
+  const text = raw.trim();
+  if (text === "") return "";
+
+  if (text.startsWith("{")) {
+    try {
+      const blocksText = fromBlocks(JSON.parse(text));
+      if (blocksText !== null) return blocksText;
+    } catch {
+      // Not JSON after all: treat it as markup or plain text below.
+    }
+  }
+
+  if (/<[a-z][\s\S]*>/i.test(text)) {
+    return text
+      .replace(/<\s*br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|div|li|h[1-6])\s*>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, "&")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  return text;
 }
 
 /**
@@ -464,6 +524,9 @@ export function parseGlintsApplicationDetail(payload: unknown): GlintsApplicatio
     resumeKey: str(d.resume),
     birthDate: str(applicant.birthDate).slice(0, 10),
     gender: str(applicant.gender),
+    jobDescription: glintsDescriptionText(
+      ((d.links as Record<string, any> | undefined)?.job as Record<string, any> | undefined)?.descriptionRaw,
+    ),
   };
 }
 
@@ -1556,17 +1619,6 @@ export class Glints {
   }
 
   /**
-   * Downloads the applicant's resume through the dashboard's own
-   * GET /api/s3/download endpoint (the same call the modal's CV tab makes) and
-   * stores it locally for the sink upload. Failures degrade to "" so a missing
-   * resume never fails the row; the signed URL is never logged.
-   *
-   * @param page - The page whose session performs the API request.
-   * @param resumeKey - The resume file key from the application detail.
-   * @param filename - Display filename for the content-disposition, no path.
-   * @returns The local file path of the stored resume, or "".
-   */
-  /**
    * Request headers the dashboard's own successful API calls carried, replayed
    * on the resume download. Every download returned 401 on 2026-09-13 while
    * sending only the session cookies (page.request shares cookies, not the
@@ -1585,6 +1637,38 @@ export class Glints {
     }
   }
 
+  /**
+   * Writes resume bytes returned directly by the download endpoint into the
+   * same storage directory fetchAndStore uses, with an extension from the
+   * file's signature or content type.
+   */
+  private async storeResumeBytes(bytes: Buffer, contentType: string): Promise<string> {
+    const extension =
+      bytes.subarray(0, 4).toString() === "%PDF" || /pdf/i.test(contentType)
+        ? "pdf"
+        : /wordprocessingml/i.test(contentType)
+          ? "docx"
+          : /msword/i.test(contentType)
+            ? "doc"
+            : "pdf";
+    const storageDir = path.join(__dirname, "../storage/");
+    await fs.promises.mkdir(storageDir, { recursive: true });
+    const filePath = path.join(storageDir, `${Date.now()}.${extension}`);
+    await fs.promises.writeFile(filePath, bytes);
+    return filePath;
+  }
+
+  /**
+   * Downloads the applicant's resume through the dashboard's own
+   * GET /api/s3/download endpoint (the same call the modal's CV tab makes) and
+   * stores it locally for the sink upload. Failures degrade to "" so a missing
+   * resume never fails the row; the signed URL is never logged.
+   *
+   * @param page - The page whose session performs the API request.
+   * @param resumeKey - The resume file key from the application detail.
+   * @param filename - Display filename for the content-disposition, no path.
+   * @returns The local file path of the stored resume, or "".
+   */
   async fetchResumeViaApi(page: any, resumeKey: string, filename: string): Promise<string> {
     try {
       const response = await page.request.get("https://employers.glints.id/api/s3/download", {
@@ -1600,7 +1684,16 @@ export class Glints {
         );
         return "";
       }
-      const body = await response.json();
+      // The endpoint answers with the file itself (observed live 2026-09-13:
+      // "%PDF-1.4…"), not the JSON { url } it was assumed to return, so
+      // response.json() threw on every resume. Store the bytes directly; the
+      // signed-URL form stays as the fallback for a JSON answer.
+      const contentType = String(response.headers?.()?.["content-type"] ?? "");
+      const bytes: Buffer | null = typeof response.body === "function" ? await response.body() : null;
+      if (bytes && bytes.length > 0 && (bytes.subarray(0, 4).toString() === "%PDF" || !/json/i.test(contentType))) {
+        return await this.storeResumeBytes(bytes, contentType);
+      }
+      const body = bytes ? JSON.parse(bytes.toString("utf8")) : await response.json();
       const signedUrl = typeof body?.url === "string" ? body.url : "";
       if (signedUrl === "") return "";
       return await this.fetchAndStore(signedUrl);
@@ -2358,7 +2451,10 @@ export class Glints {
         const applicant: Applicant = {
           portal: "glints",
           type: "applicant",
-          vacancy_description: vacancyDescription,
+          // The edit-page read finds nothing on the current dashboard (no job
+          // card exposes an edit link); the application-detail payload names
+          // the job's own description for every applicant.
+          vacancy_description: vacancyDescription || detail?.jobDescription || "",
           applied_for: job,
           applied_date: appliedDate,
           name: name,
