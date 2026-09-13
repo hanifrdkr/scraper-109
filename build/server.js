@@ -78,6 +78,23 @@ const portalRunnerFactories = {
         const config = loadPortalConfig("glints.json");
         return () => new Glints(config).Scrape();
     },
+    // Human-triggered only (scrapview's "Pindahkan ke Terhubung" button):
+    //   glints-promote <jid|-> <limit>
+    // moves up to <limit> NEW applicants of vacancy <jid> ("-" = every vacancy)
+    // to Terhubung, then scrapes that stage's unlocked contacts and resumes.
+    "glints-promote": () => {
+        var _a;
+        const { Glints } = require("./glints");
+        const config = loadPortalConfig("glints.json");
+        const jidArg = args[1] && args[1] !== "-" ? args[1] : null;
+        const limitArg = Number.parseInt((_a = args[2]) !== null && _a !== void 0 ? _a : "1", 10);
+        const limit = Number.isFinite(limitArg) && limitArg > 0 ? Math.min(limitArg, 50) : 1;
+        return () => {
+            const scraper = new Glints(config);
+            scraper.enablePromoteMode(jidArg, limit);
+            return scraper.Scrape();
+        };
+    },
     pintarnya: () => {
         const { Pintarnya } = require("./pintarnya");
         const config = loadPortalConfig("pintarnya.json");

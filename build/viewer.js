@@ -86,13 +86,14 @@ function hasXvfb() {
     const result = (0, child_process_1.spawnSync)("which", ["xvfb-run"]);
     return result.status === 0;
 }
-function runScraper(name) {
-    if (scraperState[name].status === "running")
+function runScraper(name, serverArgs = [name]) {
+    var _a;
+    if (((_a = scraperState[name]) === null || _a === void 0 ? void 0 : _a.status) === "running")
         return;
     scraperState[name] = { status: "running", log: [] };
     const [command, args] = hasXvfb()
-        ? ["xvfb-run", ["-a", TS_NODE, SERVER, name]]
-        : [TS_NODE, [SERVER, name]];
+        ? ["xvfb-run", ["-a", TS_NODE, SERVER, ...serverArgs]]
+        : [TS_NODE, [SERVER, ...serverArgs]];
     const proc = (0, child_process_1.spawn)(command, args, { cwd: ROOT_DIR });
     scraperProcesses[name] = proc;
     scraperState[name].pid = proc.pid;
@@ -180,6 +181,43 @@ function getAllApplicants() {
 }
 app.get("/api/applicants", (_req, res) => {
     res.json(getAllApplicants());
+});
+// Human-triggered Glints promotion ("Pindahkan ke Terhubung"). Glints serves an
+// applicant's email, phone and resume only after the application leaves
+// "Baru"; this moves up to `limit` NEW applicants of one vacancy to Terhubung
+// and then scrapes that stage. Moves are visible in the employer's pipeline
+// and cannot be undone by the scraper, so the endpoint demands an explicit
+// confirm flag and a small bounded limit, and never runs next to another
+// Glints run.
+const GLINTS_PROMOTE = "glints-promote";
+scraperState[GLINTS_PROMOTE] = { status: "idle", log: [] };
+app.post("/api/glints/promote", express_1.default.json(), (req, res) => {
+    var _a, _b, _c, _d, _e;
+    const rawJid = typeof ((_a = req.body) === null || _a === void 0 ? void 0 : _a.jid) === "string" ? req.body.jid.trim() : "";
+    const jid = rawJid === "" ? null : rawJid;
+    if (jid !== null && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jid)) {
+        res.status(400).json({ error: "jid must be a Glints job UUID (or empty for every vacancy)" });
+        return;
+    }
+    const limit = Number.parseInt(String((_c = (_b = req.body) === null || _b === void 0 ? void 0 : _b.limit) !== null && _c !== void 0 ? _c : ""), 10);
+    if (!Number.isFinite(limit) || limit < 1 || limit > 50) {
+        res.status(400).json({ error: "limit must be between 1 and 50" });
+        return;
+    }
+    if (((_d = req.body) === null || _d === void 0 ? void 0 : _d.confirm) !== true) {
+        res.status(400).json({ error: "confirm must be true: moving applicants to Terhubung cannot be undone by the scraper" });
+        return;
+    }
+    if (((_e = scraperState.glints) === null || _e === void 0 ? void 0 : _e.status) === "running" || scraperState[GLINTS_PROMOTE].status === "running") {
+        res.status(409).json({ error: "a Glints run is already in progress" });
+        return;
+    }
+    runScraper(GLINTS_PROMOTE, [GLINTS_PROMOTE, jid !== null && jid !== void 0 ? jid : "-", String(limit)]);
+    res.json({ started: GLINTS_PROMOTE, jid, limit });
+});
+app.get("/api/glints/promote/logs", (_req, res) => {
+    const s = scraperState[GLINTS_PROMOTE];
+    res.json({ status: s.status, log: s.log });
 });
 app.post("/api/scrape/:name", (req, res) => {
     const { name } = req.params;
@@ -767,10 +805,12 @@ const HTML = `<!DOCTYPE html>
               <button class="btn" style="padding:2px 8px" \${s.status === 'running' ? 'disabled' : ''} onclick="runScraper('\${name}')">Run</button>
               <button class="btn" style="padding:2px 8px" onclick="toggleLog('\${name}')">Logs</button>
               <button class="btn" style="padding:2px 8px" onclick="loadFullLog('\${name}')">Full Log</button>
+              \${name === 'glints' ? '<button class="btn" style="padding:2px 8px;border-color:#b45309;color:#b45309" title="Pindahkan pelamar BARU ke Terhubung lalu scrape CV, telepon dan email" onclick="promoteGlints()">Pindahkan ke Terhubung</button>' : ''}
             </div>
             <div class="log-panel \${isOpen ? 'open' : ''}" id="log-\${name}">
               \${s.log && s.log.length ? renderLog(s.log) : '<div style="color:#666;font-style:italic">No output yet.</div>'}
             </div>
+            \${name === 'glints' ? '<div class="log-panel" id="log-glints-promote"></div>' : ''}
           </div>
         \`;
       }).join('');
@@ -827,6 +867,49 @@ const HTML = `<!DOCTYPE html>
       startPolling();
       buildScraperRows(null); // re-render to open log panels
       pollStatus();
+    }
+
+    // Human-triggered Glints promotion: moves BARU applicants to Terhubung so
+    // Glints serves their CV, phone and email, then scrapes them. Asks for the
+    // vacancy and a small count, and confirms explicitly — the move is visible
+    // in Glints and the scraper cannot undo it.
+    async function promoteGlints() {
+      const jid = window.prompt(
+        'Glints job id (jid) — kosongkan untuk semua lowongan:',
+        'ebf41bfc-68e4-49f8-b6f9-894ba41a4e7a'
+      );
+      if (jid === null) return;
+      const limitText = window.prompt('Berapa pelamar BARU yang dipindahkan ke Terhubung? (1-50)', '1');
+      if (limitText === null) return;
+      const limit = parseInt(limitText, 10);
+      if (!(limit >= 1 && limit <= 50)) { alert('Jumlah harus antara 1 dan 50.'); return; }
+      const target = jid.trim() ? 'lowongan ' + jid.trim() : 'semua lowongan';
+      if (!confirm('Pindahkan ' + limit + ' pelamar BARU dari ' + target + ' ke Terhubung?\\n\\nPerpindahan ini terlihat di Glints dan tidak dapat dibatalkan oleh scraper.')) return;
+      const res = await fetch('/api/glints/promote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jid: jid.trim(), limit, confirm: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert('Gagal memulai: ' + (data.error || res.status)); return; }
+      pollPromoteLog();
+    }
+
+    async function pollPromoteLog() {
+      const el = document.getElementById('log-glints-promote');
+      try {
+        const res = await fetch('/api/glints/promote/logs');
+        const data = await res.json();
+        if (el) {
+          el.classList.add('open');
+          el.innerHTML = '<div style="font-weight:600;margin-bottom:4px">Pindahkan ke Terhubung — ' + esc(data.status) + '</div>' +
+            (data.log && data.log.length ? renderLog(data.log) : '<div style="color:#666;font-style:italic">Menunggu output...</div>');
+          el.scrollTop = el.scrollHeight;
+        }
+        if (data.status === 'running') setTimeout(pollPromoteLog, 3000);
+      } catch (err) {
+        if (el) el.innerHTML = '<div style="color:#b91c1c">Gagal membaca log: ' + esc(String(err)) + '</div>';
+      }
     }
 
     function toggleLog(name) {

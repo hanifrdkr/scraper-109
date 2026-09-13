@@ -433,6 +433,17 @@ class Glints {
         this.dashboardApiHeaders = {};
         this.loggedMissingEditLink = false;
         this.descriptionShapesLogged = new Set();
+        /**
+         * Promote mode — human-triggered only (the scrapview "Pindahkan ke Terhubung"
+         * button, see src/viewer.ts). Glints serves an applicant's email, phone and
+         * resume only once the application leaves "Baru", so on explicit operator
+         * request this moves up to `max` NEW applicants of the requested vacancy to
+         * "Terhubung" and then scrapes that stage. Never enabled by the continuous
+         * loop or a plain run: a move is visible in the employer's pipeline and the
+         * scraper cannot undo it.
+         */
+        this.promoteMode = null;
+        this.promotedCount = 0;
         this.HEADLESS = config.headless;
         this.LIMIT = config.limit;
         this.COOKIES = config.cookies;
@@ -1669,13 +1680,126 @@ class Glints {
             return null;
         });
     }
+    static isTerhubungMoveLabel(text) {
+        return Glints.TERHUBUNG_MOVE_LABEL.test(text);
+    }
+    enablePromoteMode(jid, max) {
+        const budget = Number.isFinite(max) ? Math.max(0, Math.floor(max)) : 0;
+        this.promoteMode = { jid: jid && jid.trim() ? jid.trim() : null, max: budget };
+        this.promotedCount = 0;
+    }
+    getPromotedCount() {
+        return this.promotedCount;
+    }
     /**
-     * Scrapes data from the Jooble website.
-     * @returns A Promise that resolves when the scraping is complete.
+     * Moves up to `budget` applicants from the vacancy's NEW list to Terhubung
+     * through each row's own three-dot menu, one at a time, and returns how many
+     * moved. Stops without clicking anything else when the row menu has no exact
+     * "Pindahkan ke Terhubung" item, logging the options it saw.
      */
+    promoteNewApplicants(page, vacancyUrl, budget) {
+        return __awaiter(this, void 0, void 0, function* () {
+            if (budget <= 0)
+                return 0;
+            const newListUrl = new URL(vacancyUrl.toString());
+            newListUrl.searchParams.set("status", "NEW");
+            yield page.goto(newListUrl.toString());
+            const rows = page.locator(exports.GLINTS_APPLICANT_ROW_SELECTOR);
+            const emptyMarker = page.locator(".Polaris-IndexTable__EmptySearchResultWrapper");
+            let moved = 0;
+            while (moved < budget) {
+                let rowCount = 0;
+                for (let i = 0; i < 30; i++) {
+                    rowCount = yield rows.count();
+                    if (rowCount > 0)
+                        break;
+                    if (i >= 8 && (yield emptyMarker.count()) > 0)
+                        break;
+                    yield page.waitForTimeout(1000);
+                }
+                if (rowCount === 0) {
+                    console.info(`[GLINTS] Promote: no NEW applicants left on ${vacancyUrl.searchParams.get("jid")}`);
+                    break;
+                }
+                yield this.dismissBlockingModal(page);
+                const menuButton = rows.first().locator("button").last();
+                if ((yield menuButton.count()) === 0) {
+                    console.warn("[GLINTS] Promote: the first NEW row has no menu button; stopping without moving anyone");
+                    break;
+                }
+                yield menuButton.click({ timeout: 15000 });
+                yield page.waitForTimeout(800);
+                const moveItem = yield this.findTerhubungMoveItem(page);
+                if (!moveItem) {
+                    let seen = [];
+                    try {
+                        seen = yield page.evaluate(() => Array.from(new Set(Array.from(document.querySelectorAll('[role="menuitem"], [role="menu"] *, [role="option"], li, button'))
+                            .map((el) => (el.textContent || "").replace(/\s+/g, " ").trim())
+                            .filter((t) => t && t.length <= 40))).slice(0, 40));
+                    }
+                    catch (_a) {
+                        // Diagnostics only.
+                    }
+                    console.warn(`[GLINTS] Promote: no "Pindahkan ke Terhubung" item in the row menu; stopping without moving anyone. Options seen: ${JSON.stringify(seen)}`);
+                    yield page.keyboard.press("Escape").catch(() => undefined);
+                    break;
+                }
+                yield moveItem.click({ timeout: 15000 });
+                yield page.waitForTimeout(1000);
+                yield this.confirmStageMoveIfAsked(page);
+                moved++;
+                this.promotedCount++;
+                let leftList = false;
+                for (let i = 0; i < 15; i++) {
+                    yield page.waitForTimeout(1000);
+                    if ((yield rows.count()) < rowCount) {
+                        leftList = true;
+                        break;
+                    }
+                }
+                console.info(`[GLINTS] Promote: moved applicant ${moved}/${budget} to Terhubung`);
+                if (!leftList) {
+                    // Never act on a row that may be the one just moved: reload the NEW
+                    // list so only still-NEW applicants are offered next.
+                    yield page.goto(newListUrl.toString());
+                }
+            }
+            return moved;
+        });
+    }
+    findTerhubungMoveItem(page) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const candidates = [
+                page.getByRole("menuitem", { name: Glints.TERHUBUNG_MOVE_LABEL }),
+                page.getByRole("button", { name: Glints.TERHUBUNG_MOVE_LABEL }),
+                page.getByText(Glints.TERHUBUNG_MOVE_LABEL),
+            ];
+            for (const locator of candidates) {
+                const first = locator.first();
+                if ((yield first.count()) > 0 && (yield first.isVisible().catch(() => false)))
+                    return first;
+            }
+            return null;
+        });
+    }
+    /** Confirms the move only inside its own dialog, by an exact confirm label. */
+    confirmStageMoveIfAsked(page) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const dialog = page.getByTestId("modal-wrapper").last();
+            if (!(yield dialog.isVisible().catch(() => false)))
+                return;
+            const confirm = dialog
+                .getByRole("button", { name: /^\s*(Pindahkan|Ya|Konfirmasi|Lanjutkan|Move|Confirm|Yes)\s*$/i })
+                .first();
+            if ((yield confirm.count()) > 0) {
+                yield confirm.click({ timeout: 15000 });
+                yield page.waitForTimeout(1000);
+            }
+        });
+    }
     Scrape() {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c, _d;
+            var _a, _b, _c, _d, _e;
             this.getSink();
             const launchOptions = {
                 headless: this.HEADLESS,
@@ -1871,6 +1995,10 @@ class Glints {
                 throw new Error("[GLINTS] Job cards were visible but none contained a manage-candidates link");
             }
             for (const it of listVacancyPage) {
+                // Promote mode acts only on the vacancy the operator chose.
+                if (((_d = this.promoteMode) === null || _d === void 0 ? void 0 : _d.jid) && it.jobId !== this.promoteMode.jid && !it.link.includes(this.promoteMode.jid)) {
+                    continue;
+                }
                 if (this.limitReached()) {
                     break;
                 }
@@ -1890,7 +2018,14 @@ class Glints {
                 // stage-filter tab, and its rows carry unmasked contact info without
                 // any applicant being progressed. Stage tabs are filter-only — a click
                 // never moves an applicant between stages.
-                for (const stage of exports.GLINTS_PIPELINE_STAGES) {
+                if (this.promoteMode) {
+                    yield this.promoteNewApplicants(page, vacancyUrl, this.promoteMode.max - this.promotedCount);
+                }
+                // Promote mode scrapes only Terhubung, where the moved applicants'
+                // contacts and resumes are now served.
+                for (const stage of this.promoteMode
+                    ? exports.GLINTS_PIPELINE_STAGES.filter((candidate) => candidate.key === "terhubung")
+                    : exports.GLINTS_PIPELINE_STAGES) {
                     if (this.limitReached()) {
                         break;
                     }
@@ -1939,7 +2074,7 @@ class Glints {
                         continue;
                     }
                     if (!rowsSettled && (yield page.locator(exports.GLINTS_APPLICANT_ROW_SELECTOR).count()) === 0) {
-                        const pageText = (_d = (yield page.locator("body").textContent())) === null || _d === void 0 ? void 0 : _d.replace(/\s+/g, " ").trim().slice(0, 500);
+                        const pageText = (_e = (yield page.locator("body").textContent())) === null || _e === void 0 ? void 0 : _e.replace(/\s+/g, " ").trim().slice(0, 500);
                         console.warn(`[GLINTS] Candidate table missing for stage "${stage.label}" vacancy "${it.title}" at ${page.url()}: ${pageText}`);
                         continue;
                     }
@@ -3068,3 +3203,13 @@ class Glints {
     }
 }
 exports.Glints = Glints;
+/**
+ * Scrapes data from the Jooble website.
+ * @returns A Promise that resolves when the scraping is complete.
+ */
+/**
+ * The row menu item that moves an applicant from "Baru" to "Terhubung".
+ * Matched exactly (Indonesian or English dashboard) so no other stage action
+ * can ever be clicked by the promote flow.
+ */
+Glints.TERHUBUNG_MOVE_LABEL = /^\s*(Pindahkan ke Terhubung|Move to Connected)\s*$/i;
