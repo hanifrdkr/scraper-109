@@ -1708,21 +1708,32 @@ class Glints {
             const emptyMarker = page.locator(".Polaris-IndexTable__EmptySearchResultWrapper");
             let moved = 0;
             while (moved < budget) {
+                // The table renders one-cell placeholder rows while it hydrates: the
+                // first live promote run (2026-09-13) acted on such a row — a <tr> with a
+                // single cell and no controls — and stopped. Wait for a real applicant
+                // row, one with its full set of cells (the shape extractName relies on).
                 let rowCount = 0;
-                for (let i = 0; i < 30; i++) {
+                let dataRowIndex = -1;
+                for (let i = 0; i < 45; i++) {
                     rowCount = yield rows.count();
-                    if (rowCount > 0)
+                    for (let r = 0; r < rowCount; r++) {
+                        if ((yield this.applicantCells(rows.nth(r)).count()) >= 3) {
+                            dataRowIndex = r;
+                            break;
+                        }
+                    }
+                    if (dataRowIndex >= 0)
                         break;
-                    if (i >= 8 && (yield emptyMarker.count()) > 0)
+                    if (i >= 10 && (yield emptyMarker.count()) > 0)
                         break;
                     yield page.waitForTimeout(1000);
                 }
-                if (rowCount === 0) {
-                    console.info(`[GLINTS] Promote: no NEW applicants left on ${vacancyUrl.searchParams.get("jid")}`);
+                if (dataRowIndex < 0) {
+                    console.info(`[GLINTS] Promote: no NEW applicants left on ${vacancyUrl.searchParams.get("jid")} (rows seen: ${rowCount}, none with applicant cells)`);
                     break;
                 }
                 yield this.dismissBlockingModal(page);
-                const firstRow = rows.first();
+                const firstRow = rows.nth(dataRowIndex);
                 const menuButton = firstRow.locator("button").last();
                 if ((yield menuButton.count()) === 0) {
                     // First live run (2026-09-13) found no <button> in the NEW row, so the

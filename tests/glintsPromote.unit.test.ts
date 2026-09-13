@@ -63,7 +63,7 @@ describe("Glints.enablePromoteMode", () => {
  * whose menu offers `menuLabels`. Clicking the Terhubung item removes the
  * first row, like the dashboard does. Every click is recorded.
  */
-function fakeNewList(newApplicants: number, menuLabels: string[]) {
+function fakeNewList(newApplicants: number, menuLabels: string[], placeholderRows = 0) {
   const state = { rows: newApplicants, menuOpen: false, clicks: [] as string[], gotos: [] as string[] };
 
   const menuItem = (matcher: RegExp) => ({
@@ -100,19 +100,26 @@ function fakeNewList(newApplicants: number, menuLabels: string[]) {
     locator: (selector: string) => {
       if (selector === '[data-testid="modal-close-btn"]') return { count: async () => 0 };
       if (selector.includes("EmptySearchResultWrapper")) return { count: async () => (state.rows === 0 ? 1 : 0) };
-      return {
-        count: async () => state.rows,
-        first: () => ({
-          locator: () => ({
-            last: () => ({
-              count: async () => (state.rows > 0 ? 1 : 0),
-              click: async () => {
-                state.clicks.push("row-menu");
-                state.menuOpen = true;
+      // Placeholder rows (one cell, no controls) render first, like the
+      // hydrating dashboard table; applicant rows carry the full cell set.
+      const row = (index: number) => ({
+        locator: (selector: string) =>
+          selector.includes("TableCell")
+            ? { count: async () => (index < placeholderRows ? 1 : 3) }
+            : {
+                last: () => ({
+                  count: async () => (index >= placeholderRows && state.rows > 0 ? 1 : 0),
+                  click: async () => {
+                    state.clicks.push(index < placeholderRows ? "placeholder-row-menu" : "row-menu");
+                    state.menuOpen = true;
+                  },
+                }),
               },
-            }),
-          }),
-        }),
+      });
+      return {
+        count: async () => (state.rows > 0 ? placeholderRows + state.rows : 0),
+        first: () => row(0),
+        nth: (index: number) => row(index),
       };
     },
   };
@@ -162,6 +169,16 @@ describe("Glints.promoteNewApplicants", () => {
     expect(state.clicks).toEqual(["row-menu", "key:Escape"]);
     expect(state.rows).toBe(3);
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Options seen"));
+  });
+
+  it("skips one-cell placeholder rows and acts on the first real applicant row", async () => {
+    const scraper = new Glints(makeConfig());
+    const { page, state } = fakeNewList(2, ["Pindahkan ke Terhubung"], 1);
+
+    await expect(scraper.promoteNewApplicants(page, vacancyUrl, 1)).resolves.toBe(1);
+
+    expect(state.clicks).toEqual(["row-menu", "Pindahkan ke Terhubung"]);
+    expect(state.clicks).not.toContain("placeholder-row-menu");
   });
 
   it("does nothing with a zero budget", async () => {
