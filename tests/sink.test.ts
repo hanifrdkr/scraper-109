@@ -259,6 +259,29 @@ describe("SupabaseSink", () => {
       });
     });
 
+    it("never names description in the insert payload, only in the follow-up patch", async () => {
+      // A database without the add_vacancy_description migration rejects the
+      // whole INSERT when the payload names the column ("Could not find the
+      // 'description' column"), which failed every applicant on every portal
+      // until the column moved to the already-degradable PATCH.
+      const sink = buildSink();
+
+      await sink.upsertVacancy({
+        portal: "glints",
+        portal_vacancy_id: "v-1",
+        title: "Contact Center Agent",
+        description: "Kualifikasi: ...",
+      });
+
+      const posted = (mockedAxios.post.mock.calls[0][1] as Array<Record<string, unknown>>)[0];
+      expect(posted).not.toHaveProperty("description");
+      expect(mockedAxios.patch).toHaveBeenCalledWith(
+        `${URL}/rest/v1/portal_vacancies?id=eq.1`,
+        { description: "Kualifikasi: ..." },
+        expect.anything(),
+      );
+    });
+
     it("never patches status on a re-scrape, only last_seen_at", async () => {
       mockedAxios.post.mockResolvedValueOnce({ data: [] } as never);
       mockedAxios.get.mockResolvedValueOnce({ data: [{ id: 9 }] } as never);

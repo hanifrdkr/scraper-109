@@ -298,8 +298,15 @@ export class SupabaseSink {
    */
   async upsertVacancy(v: VacancyInput): Promise<number> {
     return this.guard("upsertVacancy", async () => {
-      // superseded_link is a comparison input, not a column.
-      const { superseded_link: supersededLink, ...row } = v;
+      // superseded_link is a comparison input, not a column. `description`
+      // is deliberately kept out of the INSERT too: it is a newer column, and
+      // a payload naming it fails the whole insert (PostgREST 400, "Could not
+      // find the 'description' column") on a database where the
+      // add_vacancy_description migration has not been applied — which is
+      // what took every portal's writes down on 2026-09-12. It is written
+      // just below instead, by the PATCH that already degrades to a single
+      // warning when the column is absent.
+      const { superseded_link: supersededLink, description: _description, ...row } = v;
       const response = await axios.post(
         `${this.url}/rest/v1/portal_vacancies`,
         [row],
