@@ -339,19 +339,21 @@ function maskPhone(phone) {
     return `${prefix}${"*".repeat(Math.max(digits.length - prefix.length - 2, 2))}${suffix}`;
 }
 exports.maskPhone = maskPhone;
-function redactedIdentity(name, email) {
+/** A trimmed non-empty string, or null for anything blank or non-string. */
+function presentText(value) {
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+function fullIdentity(name, email) {
     var _a;
-    const n = typeof name === "string" && name.trim() ? name.trim() : null;
-    const maskedEmail = maskEmail(typeof email === "string" ? email : null);
-    if (n && maskedEmail)
-        return `${n} · ${maskedEmail}`;
-    return (_a = n !== null && n !== void 0 ? n : maskedEmail) !== null && _a !== void 0 ? _a : "(no identity captured)";
+    if (name && email)
+        return `${name} · ${email}`;
+    return (_a = name !== null && name !== void 0 ? name : email) !== null && _a !== void 0 ? _a : "(no identity captured)";
 }
 function getCandidates(config, opts) {
     return __awaiter(this, void 0, void 0, function* () {
         var _a, _b;
         const params = {
-            select: "id,portal,name,email,cv_object_key,photo_object_key,last_seen_at," +
+            select: "id,portal,name,email,phone:data->contact->>contact_number,cv_object_key,photo_object_key,last_seen_at," +
                 "portal_applications(applied_for,portal_vacancies(title))",
             order: "last_seen_at.desc",
             limit: String((_a = opts.limit) !== null && _a !== void 0 ? _a : 100),
@@ -371,10 +373,15 @@ function getCandidates(config, opts) {
                 const applications = (_a = row.portal_applications) !== null && _a !== void 0 ? _a : [];
                 const firstApp = applications[0];
                 const vacancyTitle = (_b = firstApp === null || firstApp === void 0 ? void 0 : firstApp.portal_vacancies) === null || _b === void 0 ? void 0 : _b.title;
+                const name = presentText(row.name);
+                const email = presentText(row.email);
                 return {
                     id: row.id,
                     portal: row.portal,
-                    identity: redactedIdentity(row.name, row.email),
+                    name,
+                    email,
+                    phone: presentText(row.phone),
+                    identity: fullIdentity(name, email),
                     vacancy: (_d = (_c = firstApp === null || firstApp === void 0 ? void 0 : firstApp.applied_for) !== null && _c !== void 0 ? _c : vacancyTitle) !== null && _d !== void 0 ? _d : null,
                     applicationStatus: applications.length > 0 ? "linked" : "unlinked",
                     cvStatus: row.cv_object_key ? "captured" : "none",

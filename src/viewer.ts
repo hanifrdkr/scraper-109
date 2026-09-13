@@ -1388,15 +1388,16 @@ const HTML = `<!DOCTYPE html>
           return;
         }
         el.innerHTML = \`<table><thead><tr>
-            <th>Portal</th><th>Identity</th><th>Vacancy</th><th>Application</th><th>CV</th><th>Files</th><th>Updated</th>
+            <th>Portal</th><th>Name</th><th>Email</th><th>Phone</th><th>Vacancy</th><th>Application</th><th>CV</th><th>Updated</th>
           </tr></thead><tbody>\${rows.map(c => \`
             <tr>
               <td><span class="tag">\${esc(c.portal)}</span></td>
-              <td>\${esc(c.identity)}</td>
+              <td>\${esc(c.name || '—')}</td>
+              <td>\${c.email ? '<a href="mailto:' + esc(c.email) + '">' + esc(c.email) + '</a>' : '<span class="badge-no">—</span>'}</td>
+              <td>\${c.phone ? esc(c.phone) : '<span class="badge-no">—</span>'}</td>
               <td>\${esc(c.vacancy || '—')}</td>
               <td>\${c.applicationStatus === 'linked' ? '<span class="badge-yes">linked</span>' : '<span class="badge-no">unlinked</span>'}</td>
-              <td>\${c.cvStatus === 'captured' ? '<span class="badge-yes">captured</span>' : '<span class="badge-no">none</span>'}</td>
-              <td>\${c.cvStatus === 'captured' ? '<button class="detail-btn" onclick="requestSignedLink(\\'' + c.portal + '\\',' + c.id + ',\\'cv\\',this)">CV link</button>' : ''} \${c.hasPhoto ? '<button class="detail-btn" onclick="requestSignedLink(\\'' + c.portal + '\\',' + c.id + ',\\'photo\\',this)">Photo link</button>' : ''}</td>
+              <td>\${c.cvStatus === 'captured' ? '<button class="detail-btn" onclick="requestSignedLink(\\'' + c.portal + '\\',' + c.id + ',\\'cv\\',this)">Buka CV</button>' : '<span class="badge-no">none</span>'} \${c.hasPhoto ? '<button class="detail-btn" onclick="requestSignedLink(\\'' + c.portal + '\\',' + c.id + ',\\'photo\\',this)">Foto</button>' : ''}</td>
               <td>\${esc(fmtTime(c.updatedAt))}</td>
             </tr>\`).join('')}</tbody></table>\`;
       } catch (err) {

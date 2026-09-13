@@ -386,9 +386,19 @@ export async function getVacancies(
   }
 }
 
+/**
+ * A scraped candidate as scrapview shows it. Contacts are returned in full:
+ * getting each applicant's CV, phone number and email is the purpose of the
+ * scrape, and the operators reading this dashboard are the ones who contact
+ * the applicants (decided 2026-09-13; the table used to mask them).
+ */
 export interface CandidateRow {
   id: number;
   portal: string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  /** "Name · email" for compact displays. */
   identity: string;
   vacancy: string | null;
   applicationStatus: "linked" | "unlinked";
@@ -416,11 +426,14 @@ export function maskPhone(phone: string | null | undefined): string | null {
   return `${prefix}${"*".repeat(Math.max(digits.length - prefix.length - 2, 2))}${suffix}`;
 }
 
-function redactedIdentity(name: unknown, email: unknown): string {
-  const n = typeof name === "string" && name.trim() ? name.trim() : null;
-  const maskedEmail = maskEmail(typeof email === "string" ? email : null);
-  if (n && maskedEmail) return `${n} · ${maskedEmail}`;
-  return n ?? maskedEmail ?? "(no identity captured)";
+/** A trimmed non-empty string, or null for anything blank or non-string. */
+function presentText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function fullIdentity(name: string | null, email: string | null): string {
+  if (name && email) return `${name} · ${email}`;
+  return name ?? email ?? "(no identity captured)";
 }
 
 export async function getCandidates(
@@ -429,7 +442,7 @@ export async function getCandidates(
 ): Promise<CandidateRow[]> {
   const params: Record<string, string> = {
     select:
-      "id,portal,name,email,cv_object_key,photo_object_key,last_seen_at," +
+      "id,portal,name,email,phone:data->contact->>contact_number,cv_object_key,photo_object_key,last_seen_at," +
       "portal_applications(applied_for,portal_vacancies(title))",
     order: "last_seen_at.desc",
     limit: String(opts.limit ?? 100),
@@ -446,10 +459,15 @@ export async function getCandidates(
       const applications = (row.portal_applications as Array<Record<string, unknown>>) ?? [];
       const firstApp = applications[0];
       const vacancyTitle = (firstApp?.portal_vacancies as Record<string, unknown> | undefined)?.title;
+      const name = presentText(row.name);
+      const email = presentText(row.email);
       return {
         id: row.id,
         portal: row.portal,
-        identity: redactedIdentity(row.name, row.email),
+        name,
+        email,
+        phone: presentText(row.phone),
+        identity: fullIdentity(name, email),
         vacancy: (firstApp?.applied_for as string | undefined) ?? (vacancyTitle as string | undefined) ?? null,
         applicationStatus: applications.length > 0 ? "linked" : "unlinked",
         cvStatus: row.cv_object_key ? "captured" : "none",

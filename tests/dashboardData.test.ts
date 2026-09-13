@@ -190,12 +190,15 @@ describe("getVacancies", () => {
 });
 
 describe("getCandidates", () => {
-  it("returns a redacted identity string, never the raw email", async () => {
+  // Getting each applicant's CV, phone and email is the purpose of the scrape,
+  // and the operators reading scrapview contact the applicants, so the
+  // candidate table shows contacts in full (it used to mask them).
+  it("returns the candidate's full name, email and phone", async () => {
     jest.clearAllMocks();
     mockedAxios.get.mockResolvedValue({
       data: [
         {
-          id: 9, portal: "seek", name: "Ada Lovelace", email: "ada@example.com",
+          id: 9, portal: "seek", name: "Ada Lovelace", email: "ada@example.com", phone: "081234567890",
           cv_object_key: "seek/x.pdf", photo_object_key: null, last_seen_at: "t",
           portal_applications: [{ applied_for: "Analyst", portal_vacancies: { title: "Analyst" } }],
         },
@@ -203,10 +206,26 @@ describe("getCandidates", () => {
     } as never);
     const config = { url: URL, anonKey: ANON_KEY, bucket: "b", serviceKey: null };
     const rows = await getCandidates(config, {});
-    expect(rows[0].identity).not.toContain("ada@example.com");
-    expect(rows[0].identity).toContain("Ada Lovelace");
+    expect(rows[0]).toMatchObject({
+      name: "Ada Lovelace",
+      email: "ada@example.com",
+      phone: "081234567890",
+      identity: "Ada Lovelace · ada@example.com",
+    });
     expect(rows[0].cvStatus).toBe("captured");
     expect(rows[0].applicationStatus).toBe("linked");
+    const params = mockedAxios.get.mock.calls[0][1]?.params as Record<string, string>;
+    expect(params.select).toContain("phone:data->contact->>contact_number");
+  });
+
+  it("returns nulls, not empty strings, for contacts that were never captured", async () => {
+    jest.clearAllMocks();
+    mockedAxios.get.mockResolvedValue({
+      data: [{ id: 10, portal: "glints", name: "  ", email: "", phone: null, cv_object_key: null, photo_object_key: null, last_seen_at: "t" }],
+    } as never);
+    const config = { url: URL, anonKey: ANON_KEY, bucket: "b", serviceKey: null };
+    const rows = await getCandidates(config, {});
+    expect(rows[0]).toMatchObject({ name: null, email: null, phone: null, identity: "(no identity captured)" });
   });
 
   it("sends a PostgREST-valid parenthesized or= filter when searching", async () => {
