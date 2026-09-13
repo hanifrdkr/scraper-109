@@ -1583,8 +1583,55 @@ export class Glints {
     return "";
   }
 
+  private loggedMissingEditLink = false;
+
+  /**
+   * Every Glints vacancy came back without a description (observed live
+   * 2026-09-13): no job card exposed the `a[href*="/job/edit/"]` link the
+   * description is read through. Rather than construct an unverified edit
+   * URL, log — once per run — the job-related link shapes and data-cy hooks
+   * the list page does render (ids replaced), so the log alone shows where
+   * the edit/detail page lives now.
+   */
+  private async logMissingEditLinkOnce(page: playwright.Page): Promise<void> {
+    if (this.loggedMissingEditLink) return;
+    this.loggedMissingEditLink = true;
+    try {
+      const seen = await page.evaluate(() => {
+        const links = new Set<string>();
+        document.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((a) => {
+          try {
+            const url = new URL(a.getAttribute("href") ?? "", location.origin);
+            if (!/job|vacanc|lowongan/i.test(url.pathname + url.search)) return;
+            links.add(
+              url.pathname
+                .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "{uuid}")
+                .replace(/\d{3,}/g, "{n}") + (url.search ? "?" + Array.from(url.searchParams.keys()).join("&") : ""),
+            );
+          } catch {
+            // Unparseable href: not a lead either way.
+          }
+        });
+        const hooks = new Set<string>();
+        document.querySelectorAll("[data-cy]").forEach((el) => {
+          const value = el.getAttribute("data-cy") ?? "";
+          if (/edit|detail|job|desc/i.test(value)) hooks.add(value);
+        });
+        return { links: Array.from(links).slice(0, 25), dataCy: Array.from(hooks).slice(0, 25) };
+      });
+      console.warn(
+        `[GLINTS] No job card exposes a /job/edit/ link, so vacancy descriptions cannot be read; job link shapes and hooks seen: ${JSON.stringify(seen)}`,
+      );
+    } catch {
+      // Diagnostics only — never fail the run over them.
+    }
+  }
+
   private async extractVacancyDescriptionFromEditPage(page: playwright.Page, editLink?: string): Promise<string> {
-    if (!editLink) return "";
+    if (!editLink) {
+      await this.logMissingEditLinkOnce(page);
+      return "";
+    }
     const returnUrl = page.url();
     await page.goto(editLink, { waitUntil: "domcontentloaded", timeout: this.TIMEOUT });
     await page.waitForTimeout(1000);
@@ -2049,6 +2096,15 @@ export class Glints {
     if (stage.isDefault) {
       return true;
     }
+    // The live stage filter can carry an applicant count ("Terhubung (3)",
+    // "Terhubung3") that an exact name never matches — every vacancy logged
+    // "tab not found" on 2026-09-13. Accept exactly the label plus a bare
+    // count and nothing longer: a stage-*moving* control is worded as a
+    // phrase ("Pindahkan ke Terhubung", "Move to Connected") and must never
+    // match.
+    const escaped = stage.tabTexts.map((text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const labelWithCount = new RegExp(`^\\s*(?:${escaped.join("|")})\\s*(?:\\(\\s*\\d+\\s*\\)|\\d+)?\\s*$`, "i");
+
     const pollAttempts = Math.max(2, Math.ceil(Math.min(this.TIMEOUT, 45000) / 1000));
     for (let attempt = 0; attempt < pollAttempts; attempt++) {
       for (const tabText of stage.tabTexts) {
@@ -2060,8 +2116,32 @@ export class Glints {
           return true;
         }
       }
+      for (const role of ["button", "tab"]) {
+        const tab = page.getByRole(role, { name: labelWithCount }).first();
+        if ((await tab.count()) > 0) {
+          await tab.click();
+          await page.waitForTimeout(1500);
+          return true;
+        }
+      }
       await page.waitForTimeout(1000);
     }
+
+    // Name what rendered, so the log alone says what the stage filter is
+    // called now instead of another silent "not found".
+    let seen: string[] = [];
+    try {
+      const texts = [
+        ...(await page.getByRole("button").allInnerTexts()),
+        ...(await page.getByRole("tab").allInnerTexts()),
+      ];
+      seen = Array.from(
+        new Set(texts.map((t: string) => t.replace(/\s+/g, " ").trim()).filter((t: string) => t && t.length <= 40)),
+      ).slice(0, 40) as string[];
+    } catch {
+      // Diagnostics only.
+    }
+    console.warn(`[GLINTS] Stage "${stage.label}" filter not found; buttons/tabs seen: ${JSON.stringify(seen)}`);
     return false;
   }
 
@@ -2484,9 +2564,14 @@ export class Glints {
     const rootSkillElement = await headerSkillElement.locator("..");
 
     // Iterate through the skill elements
-    for (let i = 1; i < await rootSkillElement.locator("//div").locator(':scope > div').count(); i++) {
-      const element = await rootSkillElement.locator(`//div/div/div[${i}]/span/div/span`).textContent();
-      skills.push(element);
+    const skillCount = await rootSkillElement.locator("//div").locator(':scope > div').count();
+    for (let i = 1; i < skillCount; i++) {
+      const skill = rootSkillElement.locator(`//div/div/div[${i}]/span/div/span`).first();
+      // Not every child is a skill chip. A missing one waited the full page
+      // timeout and failed the whole applicant row (observed live 2026-09-13).
+      if ((await skill.count()) === 0) continue;
+      const text = ((await skill.textContent()) ?? "").trim();
+      if (text) skills.push(text);
     }
 
     // Return the array of skills
@@ -2590,24 +2675,29 @@ export class Glints {
     // Locator for the list of work experience details
     const pK = await modalDetail.getByText('Pengalaman Kerja', { exact: true }).locator('..');
 
-    for (let index = 0; index < await pK.locator(':scope > div').locator(':scope > div').count(); index++) {
-      const element = await pK.locator(':scope > div').locator(':scope > div').nth(index);
+    const entries = pK.locator(':scope > div').locator(':scope > div');
+    const entryCount = await entries.count();
+    for (let index = 0; index < entryCount; index++) {
+      const paragraphs = entries.nth(index).locator('p');
+      // An entry can render fewer paragraphs than the full layout (no
+      // organization, no period). textContent() on a missing nth(i) waits the
+      // full page timeout — 60s — and used to fail the whole applicant row
+      // (observed live 2026-09-13), so every paragraph is read optionally.
+      const text = async (i: number): Promise<string> =>
+        (await paragraphs.nth(i).count()) > 0 ? ((await paragraphs.nth(i).textContent()) ?? "") : "";
 
-      const position = await element.locator('p').nth(0).textContent();
-      const organization = await element.locator('p').nth(2).textContent();
-      const period = await element.locator('p').nth(1).textContent();
+      const position = await text(0);
+      const organization = await text(2);
+      const period = await text(1);
       const periodSplit = period.split('-')
-      let jobDesc = "";
-      if (await element.locator('p').nth(3).count() > 0) {
-        jobDesc = await element.locator('p').nth(3).textContent();
-      }
+      const jobDesc = await text(3);
 
       workExperience.push({
         position: position,
         organization: organization,
         job_desc: jobDesc,
-        period_from: await this.convertDateMMDD(periodSplit[0]),
-        period_to: await this.convertDateMMDD(periodSplit[1])
+        period_from: await this.convertDateMMDD(periodSplit[0] ?? ""),
+        period_to: await this.convertDateMMDD(periodSplit[1] ?? "")
       });
       console.info(`Push work experience ${position} - ${organization} - ${period} - ${jobDesc}`);
     }

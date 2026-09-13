@@ -316,6 +316,7 @@ class Glints {
         this.VERIFICATION_CODE_WAIT_MS = 10 * 60000;
         this.VERIFICATION_POLL_INTERVAL_MS = 15000;
         this.VERIFICATION_REQUEST_MIN_INTERVAL_MS = 30 * 60000;
+        this.loggedMissingEditLink = false;
         this.HEADLESS = config.headless;
         this.LIMIT = config.limit;
         this.COOKIES = config.cookies;
@@ -1293,10 +1294,58 @@ class Glints {
             return "";
         });
     }
+    /**
+     * Every Glints vacancy came back without a description (observed live
+     * 2026-09-13): no job card exposed the `a[href*="/job/edit/"]` link the
+     * description is read through. Rather than construct an unverified edit
+     * URL, log — once per run — the job-related link shapes and data-cy hooks
+     * the list page does render (ids replaced), so the log alone shows where
+     * the edit/detail page lives now.
+     */
+    logMissingEditLinkOnce(page) {
+        return __awaiter(this, void 0, void 0, function* () {
+            if (this.loggedMissingEditLink)
+                return;
+            this.loggedMissingEditLink = true;
+            try {
+                const seen = yield page.evaluate(() => {
+                    const links = new Set();
+                    document.querySelectorAll("a[href]").forEach((a) => {
+                        var _a;
+                        try {
+                            const url = new URL((_a = a.getAttribute("href")) !== null && _a !== void 0 ? _a : "", location.origin);
+                            if (!/job|vacanc|lowongan/i.test(url.pathname + url.search))
+                                return;
+                            links.add(url.pathname
+                                .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "{uuid}")
+                                .replace(/\d{3,}/g, "{n}") + (url.search ? "?" + Array.from(url.searchParams.keys()).join("&") : ""));
+                        }
+                        catch (_b) {
+                            // Unparseable href: not a lead either way.
+                        }
+                    });
+                    const hooks = new Set();
+                    document.querySelectorAll("[data-cy]").forEach((el) => {
+                        var _a;
+                        const value = (_a = el.getAttribute("data-cy")) !== null && _a !== void 0 ? _a : "";
+                        if (/edit|detail|job|desc/i.test(value))
+                            hooks.add(value);
+                    });
+                    return { links: Array.from(links).slice(0, 25), dataCy: Array.from(hooks).slice(0, 25) };
+                });
+                console.warn(`[GLINTS] No job card exposes a /job/edit/ link, so vacancy descriptions cannot be read; job link shapes and hooks seen: ${JSON.stringify(seen)}`);
+            }
+            catch (_a) {
+                // Diagnostics only — never fail the run over them.
+            }
+        });
+    }
     extractVacancyDescriptionFromEditPage(page, editLink) {
         return __awaiter(this, void 0, void 0, function* () {
-            if (!editLink)
+            if (!editLink) {
+                yield this.logMissingEditLinkOnce(page);
                 return "";
+            }
             const returnUrl = page.url();
             yield page.goto(editLink, { waitUntil: "domcontentloaded", timeout: this.TIMEOUT });
             yield page.waitForTimeout(1000);
@@ -1730,6 +1779,14 @@ class Glints {
             if (stage.isDefault) {
                 return true;
             }
+            // The live stage filter can carry an applicant count ("Terhubung (3)",
+            // "Terhubung3") that an exact name never matches — every vacancy logged
+            // "tab not found" on 2026-09-13. Accept exactly the label plus a bare
+            // count and nothing longer: a stage-*moving* control is worded as a
+            // phrase ("Pindahkan ke Terhubung", "Move to Connected") and must never
+            // match.
+            const escaped = stage.tabTexts.map((text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+            const labelWithCount = new RegExp(`^\\s*(?:${escaped.join("|")})\\s*(?:\\(\\s*\\d+\\s*\\)|\\d+)?\\s*$`, "i");
             const pollAttempts = Math.max(2, Math.ceil(Math.min(this.TIMEOUT, 45000) / 1000));
             for (let attempt = 0; attempt < pollAttempts; attempt++) {
                 for (const tabText of stage.tabTexts) {
@@ -1741,8 +1798,30 @@ class Glints {
                         return true;
                     }
                 }
+                for (const role of ["button", "tab"]) {
+                    const tab = page.getByRole(role, { name: labelWithCount }).first();
+                    if ((yield tab.count()) > 0) {
+                        yield tab.click();
+                        yield page.waitForTimeout(1500);
+                        return true;
+                    }
+                }
                 yield page.waitForTimeout(1000);
             }
+            // Name what rendered, so the log alone says what the stage filter is
+            // called now instead of another silent "not found".
+            let seen = [];
+            try {
+                const texts = [
+                    ...(yield page.getByRole("button").allInnerTexts()),
+                    ...(yield page.getByRole("tab").allInnerTexts()),
+                ];
+                seen = Array.from(new Set(texts.map((t) => t.replace(/\s+/g, " ").trim()).filter((t) => t && t.length <= 40))).slice(0, 40);
+            }
+            catch (_a) {
+                // Diagnostics only.
+            }
+            console.warn(`[GLINTS] Stage "${stage.label}" filter not found; buttons/tabs seen: ${JSON.stringify(seen)}`);
             return false;
         });
     }
@@ -2136,14 +2215,22 @@ class Glints {
      */
     extractSkills(modalDetail) {
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             let skills = [];
             // Locate the "Skill" text element in the modal detail section
             const headerSkillElement = yield modalDetail.getByText('Skill');
             const rootSkillElement = yield headerSkillElement.locator("..");
             // Iterate through the skill elements
-            for (let i = 1; i < (yield rootSkillElement.locator("//div").locator(':scope > div').count()); i++) {
-                const element = yield rootSkillElement.locator(`//div/div/div[${i}]/span/div/span`).textContent();
-                skills.push(element);
+            const skillCount = yield rootSkillElement.locator("//div").locator(':scope > div').count();
+            for (let i = 1; i < skillCount; i++) {
+                const skill = rootSkillElement.locator(`//div/div/div[${i}]/span/div/span`).first();
+                // Not every child is a skill chip. A missing one waited the full page
+                // timeout and failed the whole applicant row (observed live 2026-09-13).
+                if ((yield skill.count()) === 0)
+                    continue;
+                const text = ((_a = (yield skill.textContent())) !== null && _a !== void 0 ? _a : "").trim();
+                if (text)
+                    skills.push(text);
             }
             // Return the array of skills
             return skills;
@@ -2242,26 +2329,31 @@ class Glints {
      */
     extractWorkExperience(modalDetail) {
         return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b;
             let workExperience = [];
             console.info("Scraping work experience ...");
             // Locator for the list of work experience details
             const pK = yield modalDetail.getByText('Pengalaman Kerja', { exact: true }).locator('..');
-            for (let index = 0; index < (yield pK.locator(':scope > div').locator(':scope > div').count()); index++) {
-                const element = yield pK.locator(':scope > div').locator(':scope > div').nth(index);
-                const position = yield element.locator('p').nth(0).textContent();
-                const organization = yield element.locator('p').nth(2).textContent();
-                const period = yield element.locator('p').nth(1).textContent();
+            const entries = pK.locator(':scope > div').locator(':scope > div');
+            const entryCount = yield entries.count();
+            for (let index = 0; index < entryCount; index++) {
+                const paragraphs = entries.nth(index).locator('p');
+                // An entry can render fewer paragraphs than the full layout (no
+                // organization, no period). textContent() on a missing nth(i) waits the
+                // full page timeout — 60s — and used to fail the whole applicant row
+                // (observed live 2026-09-13), so every paragraph is read optionally.
+                const text = (i) => __awaiter(this, void 0, void 0, function* () { var _c; return (yield paragraphs.nth(i).count()) > 0 ? ((_c = (yield paragraphs.nth(i).textContent())) !== null && _c !== void 0 ? _c : "") : ""; });
+                const position = yield text(0);
+                const organization = yield text(2);
+                const period = yield text(1);
                 const periodSplit = period.split('-');
-                let jobDesc = "";
-                if ((yield element.locator('p').nth(3).count()) > 0) {
-                    jobDesc = yield element.locator('p').nth(3).textContent();
-                }
+                const jobDesc = yield text(3);
                 workExperience.push({
                     position: position,
                     organization: organization,
                     job_desc: jobDesc,
-                    period_from: yield this.convertDateMMDD(periodSplit[0]),
-                    period_to: yield this.convertDateMMDD(periodSplit[1])
+                    period_from: yield this.convertDateMMDD((_a = periodSplit[0]) !== null && _a !== void 0 ? _a : ""),
+                    period_to: yield this.convertDateMMDD((_b = periodSplit[1]) !== null && _b !== void 0 ? _b : "")
                 });
                 console.info(`Push work experience ${position} - ${organization} - ${period} - ${jobDesc}`);
             }

@@ -43,21 +43,24 @@ class FakeStageTabsPage {
     this.revealAfterCountCalls = revealAfterCountCalls;
   }
 
-  getByRole(role: string, options: { name?: string; exact?: boolean } = {}) {
-    if (role !== "button") {
+  getByRole(role: string, options: { name?: string | RegExp; exact?: boolean } = {}) {
+    if (role !== "button" && role !== "tab") {
       throw new Error(`unexpected role ${role}`);
     }
-    const name = String(options.name ?? "");
+    // Every label on this fake page is a button; the tab role matches nothing.
+    const labelsForRole = role === "button" ? this.labels : [];
+    const name = options.name ?? "";
     const page = this;
     const matches = () => {
       if (page.countCalls < page.revealAfterCountCalls) {
         return [];
       }
-      return page.labels.filter((label) => {
+      return labelsForRole.filter((label) => {
         if (page.clicked.has(label)) return false;
+        if (name instanceof RegExp) return name.test(label);
         return options.exact
           ? label === name
-          : label.toLowerCase().includes(name.toLowerCase());
+          : label.toLowerCase().includes(String(name).toLowerCase());
       });
     };
     return {
@@ -175,6 +178,36 @@ describe("Glints.selectPipelineStage", () => {
     for (const click of page.clicks) {
       expect(click.toLowerCase()).not.toMatch(/pindahkan|move to/);
     }
+  });
+
+  // Live 2026-09-13: every vacancy logged `Stage "TERHUBUNG" tab not found`
+  // while matching the filter by exact name only; a count-suffixed label
+  // never equals the bare stage text.
+  it.each([["Terhubung (3)"], ["Terhubung3"], ["Connected (12)"]])(
+    "clicks a stage filter whose label carries an applicant count: %s",
+    async (label) => {
+      const scraper = new Glints(makeConfig());
+      const page = new FakeStageTabsPage([label]);
+      await expect(scraper.selectPipelineStage(page, terhubungStage)).resolves.toBe(true);
+      expect(page.clicks).toEqual([label]);
+    },
+  );
+
+  it("never mistakes a count-suffixed move control for the stage filter", async () => {
+    const scraper = new Glints(makeConfig());
+    const page = new FakeStageTabsPage(["Pindahkan ke Terhubung (3)", "Move to Connected 2", "Terhubung (3)"]);
+    await expect(scraper.selectPipelineStage(page, terhubungStage)).resolves.toBe(true);
+    expect(page.clicks).toEqual(["Terhubung (3)"]);
+  });
+
+  it("logs the labels it did see when no stage filter matches", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    const scraper = new Glints(makeConfig());
+    const page = new FakeStageTabsPage(["Pindahkan ke Terhubung"]);
+    await expect(scraper.selectPipelineStage(page, terhubungStage)).resolves.toBe(false);
+    expect(page.clicks).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Stage "TERHUBUNG" filter not found'));
+    warn.mockRestore();
   });
 });
 
