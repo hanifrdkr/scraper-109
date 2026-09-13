@@ -486,6 +486,32 @@ export function normalizeGlintsApplicantName(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+/**
+ * Key paths in a JSON value whose key looks like a description (`/desc/i`),
+ * with the length of each value — never the value itself. Arrays are walked
+ * through their first element only (a shape, not every row) and marked `[]`.
+ */
+export function descriptionKeyPaths(value: unknown, maxDepth = 8): { path: string; length: number }[] {
+  const found = new Map<string, number>();
+  const walk = (node: unknown, path: string, depth: number): void => {
+    if (depth > maxDepth || node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      if (node.length > 0) walk(node[0], `${path}[]`, depth + 1);
+      return;
+    }
+    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+      const childPath = path ? `${path}.${key}` : key;
+      if (/desc/i.test(key) && child !== null && child !== undefined && child !== "") {
+        const length = typeof child === "string" ? child.length : JSON.stringify(child).length;
+        if (!found.has(childPath)) found.set(childPath, length);
+      }
+      walk(child, childPath, depth + 1);
+    }
+  };
+  walk(value, "", 0);
+  return Array.from(found, ([path, length]) => ({ path, length }));
+}
+
 export class Glints {
   private HEADLESS: boolean = true;
   private LIMIT: number = 0;
@@ -1640,6 +1666,46 @@ export class Glints {
     return description;
   }
 
+  private descriptionShapesLogged = new Set<string>();
+
+  /**
+   * Glints vacancy descriptions have no readable source yet: the employer job
+   * list exposes no edit link (the job-link diagnostic listed only
+   * /job-metrics, /job/create and manage-candidates links), and the public
+   * job page answers 403 "Glints - Firewall" to a scripted client — getting
+   * around that is out of scope. The dependable source is the dashboard's own
+   * API, as it was for KitaLulus CVs. This logs, once per response shape and
+   * capped at 15 lines, every Glints JSON response carrying description-like
+   * keys: method, host, path with ids replaced, and key paths with value
+   * lengths — never the values — so one run shows which response to read.
+   */
+  watchDescriptionShapedResponses(page: playwright.Page): void {
+    page.on("response", async (response: playwright.Response) => {
+      try {
+        if (this.descriptionShapesLogged.size >= 15 || response.status() !== 200) return;
+        const url = new URL(response.url());
+        if (!/(^|\.)glints\.(id|com)$/i.test(url.host)) return;
+        if (!/json/i.test(response.headers()["content-type"] ?? "")) return;
+        const paths = descriptionKeyPaths(await response.json());
+        if (paths.length === 0) return;
+        const shape = `${response.request().method()} ${url.host}${url.pathname
+          .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "{uuid}")
+          .replace(/\d{3,}/g, "{n}")}`;
+        const signature = `${shape} :: ${paths.map((p) => p.path).join(",")}`;
+        if (this.descriptionShapesLogged.has(signature)) return;
+        this.descriptionShapesLogged.add(signature);
+        console.info(
+          `[GLINTS] API response with description-like keys: ${shape} :: ${paths
+            .slice(0, 8)
+            .map((p) => `${p.path} (${p.length})`)
+            .join(", ")}`,
+        );
+      } catch {
+        // Diagnostics only: a non-JSON body or closed page is not an error.
+      }
+    });
+  }
+
   async ExtractListVacancyPage(page: any): Promise<VacancyPage[]> {
     const vacancies = await page.evaluate(() => {
       const byJobId = new Map<string, { title: string; link: string; vacancyId?: string; editLink?: string; isBaseLink: boolean }>();
@@ -1923,6 +1989,10 @@ export class Glints {
     }
 
     // Switch to the correct company before scraping — wrong company returns empty results
+    // Passive: logs where the dashboard's own API carries job descriptions
+    // (see watchDescriptionShapedResponses). Armed before the company switch
+    // and job-list tabs so the job-list responses are observed too.
+    this.watchDescriptionShapedResponses(page);
     await this.selectTargetCompany(page);
 
     // Suppress VIP expired modal via localStorage, then dismiss if already shown
