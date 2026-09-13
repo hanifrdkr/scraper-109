@@ -404,6 +404,23 @@ class Glints {
         });
     }
     /**
+     * Closes a Glints `modal-wrapper` that carries no `modal-close-btn` (the
+     * only control dismissBlockingModal knows) by pressing Escape, bounded.
+     * Only used before the company switch — never while an applicant modal,
+     * which is also a `modal-wrapper`, is open.
+     */
+    dismissModalWithoutCloseButton(page) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const wrapper = page.getByTestId("modal-wrapper").first();
+            for (let i = 0; i < 3; i++) {
+                if (!(yield wrapper.isVisible().catch(() => false)))
+                    return;
+                yield page.keyboard.press("Escape").catch(() => undefined);
+                yield page.waitForTimeout(500);
+            }
+        });
+    }
+    /**
      * Selects the target company from the Glints company switcher dropdown on the dashboard.
      * Required when the account manages multiple companies — the wrong company will return
      * empty results. Matching is against the switcher's *display* strings (trimmed,
@@ -439,8 +456,22 @@ class Glints {
             }
             // The VIP-expired modal renders over the sidebar and swallows the UBAH click.
             yield this.dismissBlockingModal(page);
+            yield this.dismissModalWithoutCloseButton(page);
             console.info(`[GLINTS] Switching company to: ${TARGET}`);
-            yield page.locator('p').filter({ hasText: GLINTS_UBAH_REGEX }).first().click();
+            const ubah = page.locator('p').filter({ hasText: GLINTS_UBAH_REGEX }).first();
+            try {
+                yield ubah.click({ timeout: 15000 });
+            }
+            catch (_b) {
+                // A post-login modal can mount after the dismissal above. On 2026-09-13
+                // one intercepted this click for the full 60s page timeout and failed
+                // the whole attempt (fresh browser + re-login); dismiss again and retry
+                // once, bounded, before letting the attempt fail.
+                console.info("[GLINTS] UBAH click was intercepted; dismissing modals and retrying once.");
+                yield this.dismissBlockingModal(page);
+                yield this.dismissModalWithoutCloseButton(page);
+                yield ubah.click({ timeout: 15000 });
+            }
             // react-select exposes the menu either as ARIA options or (live dashboard,
             // 2026-08) as plain divs carrying the select__option class; the menu can
             // render a beat after the click, so poll briefly before enumerating.
@@ -1109,7 +1140,11 @@ class Glints {
                     // Read off the vacancy's edit page once per vacancy; empty when that
                     // page was not reachable, which upserts as a null description.
                     vacancy_description: param.vacancy_description || null,
-                    vacancy_raw: { type: param.type },
+                    // The description also rides in raw on first insert: raw is the one
+                    // place every deployment can hold it, including a database without
+                    // the add_vacancy_description column (which the dashboard reads back
+                    // via raw->>description). Kitalulus and SEEK already do the same.
+                    vacancy_raw: Object.assign({ type: param.type }, (param.vacancy_description ? { description: param.vacancy_description } : {})),
                     portal_candidate_id: param.portal_candidate_id,
                     name: param.name,
                     email: param.email,

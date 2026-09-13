@@ -1138,3 +1138,95 @@ describe("Glints sendToSink error sanitization", () => {
     expectNoPii(JSON.stringify(errorSpy.mock.calls));
   });
 });
+
+// Glints reads each vacancy's description off its edit page, but its
+// vacancy_raw carried only { type }, so on a database without the
+// add_vacancy_description column the description was dropped entirely.
+// Kitalulus and SEEK already put it in raw on first insert, which the
+// dashboard reads back via raw->>description.
+describe("Glints sendToSink vacancy description", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "scraper-sink-desc-"));
+    jest.spyOn(console, "info").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function scraperWithSink() {
+    const config: GlintsConfigJson = {
+      headless: true,
+      cookies: [],
+      local_storage: [],
+      limit: 0,
+      api_destination: "http://127.0.0.1/unused",
+      timeout: 1000,
+      slowmo: 0,
+      db_path: path.relative(path.join(process.cwd(), "src"), path.join(tempDir, "glints.db")),
+    };
+    const scraper = new Glints(config);
+    const sink = {
+      upsertVacancy: jest.fn().mockResolvedValue(1),
+      upsertCandidate: jest.fn().mockResolvedValue(2),
+      linkApplication: jest.fn().mockResolvedValue(undefined),
+      uploadArtifact: jest.fn().mockResolvedValue(null),
+      uploadArtifactBytes: jest.fn().mockResolvedValue(null),
+    };
+    (scraper as unknown as { sink: unknown }).sink = sink;
+    return { scraper, sink };
+  }
+
+  function applicant(extra: Record<string, unknown> = {}) {
+    return {
+      portal: "glints",
+      type: "applicant",
+      applied_for: "Contact Center Agent",
+      applied_date: "2026-09-13",
+      url_profile: "https://employers.glints.id/manage-candidates?jid=job-a",
+      name: "Synthetic Applicant",
+      summary: "",
+      email: "synthetic@example.com",
+      contact: { type: "whatsapp", contact_number: "08123456789" },
+      date_of_birth: "",
+      salary_expectation: "",
+      work_experience: [],
+      education: [],
+      skill: [],
+      location: "",
+      gender: "",
+      photo: "",
+      cv: "",
+      portal_vacancy_id: "ebf41bfc-68e4-49f8-b6f9-894ba41a4e7a",
+      ...extra,
+    } as Parameters<Glints["sendToSink"]>[0];
+  }
+
+  it("carries the edit-page description in the vacancy's raw payload", async () => {
+    const { scraper, sink } = scraperWithSink();
+
+    await scraper.sendToSink(applicant({ vacancy_description: "Kualifikasi: minimal SMA" }));
+
+    expect(sink.upsertVacancy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portal_vacancy_id: "ebf41bfc-68e4-49f8-b6f9-894ba41a4e7a",
+        description: "Kualifikasi: minimal SMA",
+        raw: expect.objectContaining({ type: "applicant", description: "Kualifikasi: minimal SMA" }),
+      }),
+    );
+  });
+
+  it("leaves description out of raw when the edit page yielded none", async () => {
+    const { scraper, sink } = scraperWithSink();
+
+    await scraper.sendToSink(applicant({ vacancy_description: "" }));
+
+    const vacancy = sink.upsertVacancy.mock.calls[0][0] as { raw: Record<string, unknown>; description: unknown };
+    expect(vacancy.raw).not.toHaveProperty("description");
+    expect(vacancy.description).toBeNull();
+  });
+});

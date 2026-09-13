@@ -821,7 +821,7 @@
     ],
     "email": "auliaindrahel@radikari.id",
     "password": "P@ssw0rd",
-    "limit": 2,
+    "limit": 0,
     "timeout": 60000,
     "slowmo": 10000,
     "api_destination": "http://84.247.147.108:9012/api/v1/candidate",

@@ -29,8 +29,28 @@ class FakeDashboardPage {
   /** Entries exposed via ARIA role=option (live dashboard exposes none). */
   ariaEntries: string[] = [];
   modalCloseCount = 0;
+  /** A post-login `modal-wrapper` with no close button, closable only by Escape. */
+  bareModalVisible = false;
+  /** UBAH clicks that throw (an intercepting modal) before one succeeds. */
+  ubahClickFailures = 0;
   clicks: string[] = [];
   waits = 0;
+
+  keyboard = {
+    press: async (key: string) => {
+      this.clicks.push(`key:${key}`);
+      if (key === "Escape") this.bareModalVisible = false;
+    },
+  };
+
+  getByTestId(testId: string) {
+    const page = this;
+    return {
+      first: () => ({
+        isVisible: async () => testId === "modal-wrapper" && page.bareModalVisible,
+      }),
+    };
+  }
 
   constructor(ubahCounts: number[], targetCounts: number[], entries: string[] = []) {
     this.ubahCounts = ubahCounts;
@@ -76,6 +96,11 @@ class FakeDashboardPage {
           count: async () => (queue.length > 1 ? queue.shift()! : queue[0] ?? 0),
           first: () => ({
             click: async () => {
+              if (isUbah && page.ubahClickFailures > 0) {
+                page.ubahClickFailures--;
+                page.clicks.push("ubah:intercepted");
+                throw new Error("locator.click: <div data-testid=\"modal-wrapper\"> intercepts pointer events");
+              }
               page.clicks.push(isUbah ? "ubah" : "target");
             },
           }),
@@ -231,5 +256,37 @@ describe("Glints.selectTargetCompany", () => {
     await scraper.selectTargetCompany(page as any);
 
     expect(page.clicks).toEqual([]);
+  });
+
+  // Live 2026-09-13: after credential login a `modal-wrapper` with no
+  // modal-close-btn intercepted the UBAH click for the full 60s page timeout,
+  // failing the whole attempt (fresh browser + re-login).
+  it("closes a modal that has no close button with Escape before clicking UBAH", async () => {
+    const scraper = new Glints(makeConfig("PT RADIKARI"));
+    const page = new FakeDashboardPage([1], [0], ["PT RADIKARI"]);
+    page.bareModalVisible = true;
+
+    await scraper.selectTargetCompany(page as any);
+
+    expect(page.clicks).toEqual(["key:Escape", "ubah", "option:PT RADIKARI"]);
+  });
+
+  it("retries an intercepted UBAH click once after dismissing modals again", async () => {
+    const scraper = new Glints(makeConfig("PT RADIKARI"));
+    const page = new FakeDashboardPage([1], [0], ["PT RADIKARI"]);
+    page.ubahClickFailures = 1;
+
+    await scraper.selectTargetCompany(page as any);
+
+    expect(page.clicks).toEqual(["ubah:intercepted", "ubah", "option:PT RADIKARI"]);
+  });
+
+  it("lets the attempt fail when UBAH stays intercepted after the one retry", async () => {
+    const scraper = new Glints(makeConfig("PT RADIKARI"));
+    const page = new FakeDashboardPage([1], [0], ["PT RADIKARI"]);
+    page.ubahClickFailures = 2;
+
+    await expect(scraper.selectTargetCompany(page as any)).rejects.toThrow(/intercepts pointer events/);
+    expect(page.clicks).toEqual(["ubah:intercepted", "ubah:intercepted"]);
   });
 });
