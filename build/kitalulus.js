@@ -128,6 +128,19 @@ class KitaLulus {
         this.APPLICANT_REFERENCE_LINK_SELECTOR = "id=applicantLinkPendukung";
         this.APPLICANT_AVATAR_SELECTOR = '[data-test-id="imgApplicantDetailAvatar"]';
         this.APPLICANT_SALARY_EXPECTATION_SELECTOR = 'id=applicantGajiYangDiharapkan';
+        /**
+         * Incremented on every applicant open, so a `jobApplication` response that
+         * arrives late for a previous applicant can never set the current one's
+         * CV URL.
+         */
+        this.applicantOpenSeq = 0;
+        /**
+         * CV URL of the applicant whose drawer was opened last, read from the
+         * `jobApplication` GraphQL response the dashboard fires on open (captured
+         * by openApplicantDetailPage). Reset on every open so one applicant's CV
+         * can never be attributed to the next.
+         */
+        this.currentApplicantCvUrl = null;
         this.HEADLESS = config.headless;
         this.BASE_URL = config.base_url;
         this.EMAIL = config.email;
@@ -1201,6 +1214,21 @@ class KitaLulus {
             const listUrl = page.url();
             yield this.dismissMarketingOverlay(page);
             yield this.closeAnyOpenDialog(page);
+            // Armed before the click: opening an applicant makes the dashboard fire
+            // its `jobApplication` GraphQL query, whose payload names the CV URL
+            // (see cvUrlFromJobApplication). Resolved in the background — extractCV
+            // runs seconds later, after every profile field — so no open path waits
+            // on it, and one that never fires the query simply leaves it null.
+            const seq = ++this.applicantOpenSeq;
+            this.currentApplicantCvUrl = null;
+            void page
+                .waitForResponse((resp) => resp.status() === 200 && KitaLulus.isJobApplicationQuery(resp.url(), resp.request().postData()), { timeout: Math.min(this.TIMEOUT, 30000) })
+                .then((resp) => __awaiter(this, void 0, void 0, function* () { return KitaLulus.cvUrlFromJobApplication(yield resp.json()); }))
+                .then((url) => {
+                if (seq === this.applicantOpenSeq)
+                    this.currentApplicantCvUrl = url;
+            })
+                .catch(() => undefined);
             yield row.click();
             yield page.waitForTimeout(500);
             if ((yield page.locator(this.APPLICANT_DETAIL_NAME_SELECTOR).count()) > 0) {
@@ -1599,8 +1627,21 @@ class KitaLulus {
         return __awaiter(this, void 0, void 0, function* () {
             let filePath = "";
             yield this.dismissMarketingOverlay(page);
+            // Primary source: the CV URL named by this applicant's own
+            // `jobApplication` payload (armed in openApplicantDetailPage), fetched
+            // with the dashboard's session. The CV tab's viewer below only rendered
+            // for the first applicant of a drawer session, so it is a fallback. The
+            // payload normally lands well before this point; allow a short grace
+            // period in case it is still in flight.
+            for (let i = 0; i < 6 && this.currentApplicantCvUrl === null; i++) {
+                yield page.waitForTimeout(500);
+            }
+            filePath = yield this.fetchCvByUrl(page, this.currentApplicantCvUrl);
+            if (filePath) {
+                console.info("[CV] Captured the CV from the applicant's jobApplication URL.");
+            }
             const cvTab = page.getByRole('tab', { name: 'CV' });
-            if ((yield cvTab.count()) > 0) {
+            if (filePath === "" && (yield cvTab.count()) > 0) {
                 // Armed before the click: the tab's react-pdf viewer fetches the file
                 // as soon as the tab opens, so a listener attached afterwards misses it.
                 const viewerResponse = page
@@ -1714,6 +1755,78 @@ class KitaLulus {
             }
             catch (error) {
                 console.warn(`[CV] Could not read the CV viewer's file response: ${String(error)}`);
+                return "";
+            }
+        });
+    }
+    /**
+     * Reads `data.jobApplication.userProfile.cv.url` from the dashboard's own
+     * `jobApplication` GraphQL payload, accepting only a KitaLulus file URL.
+     *
+     * This is the reliable CV source. The CV tab's react-pdf viewer rendered
+     * only for the first applicant of a drawer session — its `userCv` query
+     * came back with no URL for the following ones and nothing loaded — while
+     * this URL was present for every applicant and a direct GET returned the
+     * PDF each time (verified live 2026-09-13 on three consecutive applicants).
+     */
+    static cvUrlFromJobApplication(payload) {
+        var _a, _b, _c, _d;
+        const url = (_d = (_c = (_b = (_a = payload === null || payload === void 0 ? void 0 : payload.data) === null || _a === void 0 ? void 0 : _a.jobApplication) === null || _b === void 0 ? void 0 : _b.userProfile) === null || _c === void 0 ? void 0 : _c.cv) === null || _d === void 0 ? void 0 : _d.url;
+        if (typeof url !== "string")
+            return null;
+        try {
+            const parsed = new URL(url);
+            return /(^|\.)kitalulus\.com$/i.test(parsed.host) && parsed.pathname.startsWith("/file/") ? url : null;
+        }
+        catch (_e) {
+            return null;
+        }
+    }
+    /** Whether a request is the dashboard's `jobApplication` GraphQL query (single or batched). */
+    static isJobApplicationQuery(url, postData) {
+        if (!/gql\.kitalulus\.com\/graphql/i.test(url) || !postData)
+            return false;
+        try {
+            const body = JSON.parse(postData);
+            const operations = Array.isArray(body) ? body : [body];
+            return operations.some((op) => (op === null || op === void 0 ? void 0 : op.operationName) === "jobApplication");
+        }
+        catch (_a) {
+            return false;
+        }
+    }
+    /**
+     * Downloads the CV at `url` through the page's own request context — the
+     * same session cookies as the dashboard — and stores it as a temp file
+     * (removed after the applicant by removePendingTempFiles). Returns "" unless
+     * the response is a 200 carrying an actual document.
+     */
+    fetchCvByUrl(page, url) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a;
+            if (!url)
+                return "";
+            try {
+                const response = yield page.request.get(url, { timeout: Math.min(this.TIMEOUT, 60000) });
+                if (response.status() !== 200) {
+                    console.info(`[CV] Direct CV fetch returned HTTP ${response.status()}.`);
+                    return "";
+                }
+                const contentType = (_a = response.headers()["content-type"]) !== null && _a !== void 0 ? _a : "";
+                const body = yield response.body();
+                const isPdf = body.subarray(0, 4).toString() === "%PDF";
+                if (body.length === 0 || (!isPdf && !KitaLulus.isCvResponse(url, contentType)))
+                    return "";
+                const extension = isPdf || /pdf/i.test(contentType) ? "pdf" : path_1.default.extname(new URL(url).pathname).replace(".", "") || "pdf";
+                const storageDir = path_1.default.join(__dirname, "../storage/");
+                yield fs_1.default.promises.mkdir(storageDir, { recursive: true });
+                const filePath = path_1.default.join(storageDir, `${Date.now()}.${extension}`);
+                yield fs_1.default.promises.writeFile(filePath, body);
+                this.pendingTempFiles.push(filePath);
+                return filePath;
+            }
+            catch (error) {
+                console.warn(`[CV] Direct CV fetch failed: ${String(error).split("\n")[0]}`);
                 return "";
             }
         });
