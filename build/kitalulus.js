@@ -12,7 +12,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.KitaLulus = void 0;
+exports.KitaLulus = exports.isEmailShaped = exports.isPhoneShaped = void 0;
 const playwright_1 = __importDefault(require("playwright"));
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
@@ -24,6 +24,23 @@ const supabaseSink_1 = require("./supabaseSink");
 const portalSink_1 = require("./portalSink");
 const browserRegistry_1 = require("./browserRegistry");
 const pdf_parse_1 = require("pdf-parse");
+/**
+ * The applicant panel renders the email and the phone under one shared
+ * test-id, so the contact extractors tell them apart by shape. A phone is
+ * 8-15 digits once separators and a leading "+" are stripped, and never
+ * contains "@"; an email has exactly one "@" with a dotted domain.
+ */
+function isPhoneShaped(text) {
+    if (text.includes("@"))
+        return false;
+    const digits = text.replace(/[\s\-().]/g, "").replace(/^\+/, "");
+    return /^\d{8,15}$/.test(digits);
+}
+exports.isPhoneShaped = isPhoneShaped;
+function isEmailShaped(text) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text.trim());
+}
+exports.isEmailShaped = isEmailShaped;
 /**
  * Runs **in the page** (passed to `page.evaluate`), so it must stay
  * closure-free and self-contained.
@@ -1384,23 +1401,24 @@ class KitaLulus {
     }
     scrapeApplicantDetails(type_1, page_1, vacancyPageTitle_1) {
         return __awaiter(this, arguments, void 0, function* (type, page, vacancyPageTitle, vacancyDescription = null) {
-            const email = yield this.extractEmail(page);
             // No local-DB dedupe on the sink path: the scoring Supabase's write-once
             // upserts make re-scrapes idempotent.
-            const cvDetails = yield this.extractCV(page);
-            const appliedFor = vacancyPageTitle || "Pelamar KitaLulus";
-            const applicant = {
-                portal: "kita_lulus",
-                type: type,
-                applied_for: appliedFor,
-                // The description comes from the vacancy's own detail page (walked once
-                // per vacancy by extractVacancyDetail), never from the applicant view.
-                vacancy_description: vacancyDescription !== null && vacancyDescription !== void 0 ? vacancyDescription : undefined,
+            // The applicant opens as an in-page drawer that is closed with Escape
+            // and keeps whichever tab it last showed. Once one applicant's CV had
+            // been read, the next one opened straight onto the CV tab, so its
+            // profile fields (the phone among them) were read off the wrong panel
+            // and its CV viewer had already loaded before extractCV could listen.
+            // Every profile field is therefore read on "Preview profil" first, and
+            // the CV — the only thing that switches tabs — is read last; coming
+            // from the profile tab also remounts the viewer, so its file fetch is
+            // observable.
+            yield this.selectProfileTab(page);
+            const profile = {
                 applied_date: yield this.extractAppliedDate(page),
                 name: yield this.extractName(page),
                 nick_name: yield this.extractNickName(page),
                 summary: yield this.extractAbout(page),
-                email: email,
+                email: yield this.extractEmail(page),
                 whatapps: yield this.extractWA(page),
                 age: yield this.extractAge(page),
                 date_of_birth: yield this.extractBirthday(page),
@@ -1410,16 +1428,32 @@ class KitaLulus {
                 skill: yield this.extractSkills(page),
                 location: yield this.extractLocation(page),
                 photo: yield this.extractAvatar(page),
-                cv_filename: cvDetails.filename,
-                cv_text: cvDetails.text,
-                cv_url: cvDetails.publicUrl,
-                cv_ocr_method: cvDetails.method,
                 gender: yield this.extractGender(page),
                 reference_link: yield this.extractReferenceLink(page),
-                cv: cvDetails.filePath,
-                page_url: yield page.url(),
             };
+            const cvDetails = yield this.extractCV(page);
+            const appliedFor = vacancyPageTitle || "Pelamar KitaLulus";
+            const applicant = Object.assign(Object.assign({ portal: "kita_lulus", type: type, applied_for: appliedFor, 
+                // The description comes from the vacancy's own detail page (walked once
+                // per vacancy by extractVacancyDetail), never from the applicant view.
+                vacancy_description: vacancyDescription !== null && vacancyDescription !== void 0 ? vacancyDescription : undefined }, profile), { cv_filename: cvDetails.filename, cv_text: cvDetails.text, cv_url: cvDetails.publicUrl, cv_ocr_method: cvDetails.method, cv: cvDetails.filePath, page_url: yield page.url() });
             return applicant;
+        });
+    }
+    /**
+     * Puts the applicant drawer on its profile tab ("Preview profil"), where
+     * the contact block and every profile field render. A no-op when the
+     * drawer has no tab bar or is already there.
+     */
+    selectProfileTab(page) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const profileTab = page.getByRole("tab", { name: /^\s*(Preview profil|Profil)\s*$/i }).first();
+            if ((yield profileTab.count().catch(() => 0)) === 0)
+                return;
+            if ((yield profileTab.getAttribute("aria-selected").catch(() => null)) === "true")
+                return;
+            yield profileTab.click({ timeout: 5000 }).catch(() => undefined);
+            yield page.waitForTimeout(1000);
         });
     }
     getOptionalText(locator) {
@@ -1567,6 +1601,11 @@ class KitaLulus {
             yield this.dismissMarketingOverlay(page);
             const cvTab = page.getByRole('tab', { name: 'CV' });
             if ((yield cvTab.count()) > 0) {
+                // Armed before the click: the tab's react-pdf viewer fetches the file
+                // as soon as the tab opens, so a listener attached afterwards misses it.
+                const viewerResponse = page
+                    .waitForResponse((resp) => { var _a; return resp.status() === 200 && KitaLulus.isCvResponse(resp.url(), (_a = resp.headers()["content-type"]) !== null && _a !== void 0 ? _a : ""); }, { timeout: Math.min(this.TIMEOUT, 20000) })
+                    .catch(() => null);
                 console.info("[CV] Clicking CV tab...");
                 yield cvTab.click();
                 yield page.waitForTimeout(1000);
@@ -1574,19 +1613,27 @@ class KitaLulus {
                     console.info("[CV] No CV uploaded on the CV tab.");
                 }
                 else {
-                    const cvDownloadButton = yield this.findFirstVisibleLocator([
-                        page.locator('[data-test-id="btnApplicantDetailDownloadCV"]'),
-                        page.getByRole("button", { name: /Unduh CV/i }),
-                        page.getByText("Unduh CV", { exact: true }),
-                        page.locator("button").filter({ hasText: /Unduh CV/i }),
-                        page.locator("a").filter({ hasText: /Unduh CV/i }),
-                    ], 5000);
-                    if (cvDownloadButton) {
-                        console.info("[CV] Found CV download button.");
-                        filePath = yield this.captureFileFromPopupOrCurrentPage(page, cvDownloadButton, "CV");
+                    filePath = yield this.saveCvResponse(yield viewerResponse);
+                    if (filePath) {
+                        console.info("[CV] Captured the file the CV tab's viewer loaded.");
                     }
                     else {
-                        console.info("[CV] CV download button not present on CV tab.");
+                        // Fallback for a panel that offers a real download instead of an
+                        // in-page viewer.
+                        const cvDownloadButton = yield this.findFirstVisibleLocator([
+                            page.locator('[data-test-id="btnApplicantDetailDownloadCV"]'),
+                            page.getByRole("button", { name: /Unduh CV/i }),
+                            page.getByText("Unduh CV", { exact: true }),
+                            page.locator("button").filter({ hasText: /Unduh CV/i }),
+                            page.locator("a").filter({ hasText: /Unduh CV/i }),
+                        ], 5000);
+                        if (cvDownloadButton) {
+                            console.info("[CV] Viewer file not captured; trying the CV download button.");
+                            filePath = yield this.captureFileFromPopupOrCurrentPage(page, cvDownloadButton, "CV");
+                        }
+                        else {
+                            console.info("[CV] CV download button not present on CV tab.");
+                        }
                     }
                 }
             }
@@ -1615,6 +1662,60 @@ class KitaLulus {
                 publicUrl: this.buildStoragePublicUrl(filePath),
                 method: extracted.method,
             };
+        });
+    }
+    /**
+     * Whether a network response is the applicant's CV file itself.
+     *
+     * The CV tab renders the file in-page with react-pdf: opening the tab
+     * fires the `userCv` GraphQL query, and the viewer then fetches
+     * `asset.kitalulus.com/file/…/auth_download/…` as `application/pdf`.
+     * "Unduh CV" fires no download, popup or request in the automated browser
+     * (verified live 2026-09-13), which is why every applicant came back with
+     * no CV — so the file is taken from the viewer's own response instead.
+     */
+    static isCvResponse(url, contentType) {
+        let parsed;
+        try {
+            parsed = new URL(url);
+        }
+        catch (_a) {
+            return false;
+        }
+        return (/(^|\.)kitalulus\.com$/i.test(parsed.host) &&
+            parsed.pathname.startsWith("/file/") &&
+            /application\/(pdf|octet-stream|msword|vnd\.openxmlformats)/i.test(contentType));
+    }
+    /**
+     * Writes a captured CV response body to a temp file (removed after the
+     * applicant by removePendingTempFiles) and returns its path, or "" when
+     * there is nothing usable. The body is read from the response the viewer
+     * already received, so no second, separately-authenticated fetch is made.
+     */
+    saveCvResponse(response) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a;
+            if (!response)
+                return "";
+            try {
+                const body = yield response.body();
+                if (body.length === 0)
+                    return "";
+                const contentType = (_a = response.headers()["content-type"]) !== null && _a !== void 0 ? _a : "";
+                const extension = /pdf/i.test(contentType)
+                    ? "pdf"
+                    : path_1.default.extname(new URL(response.url()).pathname).replace(".", "") || "pdf";
+                const storageDir = path_1.default.join(__dirname, "../storage/");
+                yield fs_1.default.promises.mkdir(storageDir, { recursive: true });
+                const filePath = path_1.default.join(storageDir, `${Date.now()}.${extension}`);
+                yield fs_1.default.promises.writeFile(filePath, body);
+                this.pendingTempFiles.push(filePath);
+                return filePath;
+            }
+            catch (error) {
+                console.warn(`[CV] Could not read the CV viewer's file response: ${String(error)}`);
+                return "";
+            }
         });
     }
     waitForLocatorVisible(locator, timeoutMs) {
@@ -1658,7 +1759,16 @@ class KitaLulus {
             const popupPromise = page.waitForEvent("popup", { timeout: 5000 }).catch(() => null);
             const downloadPromise = page.waitForEvent("download", { timeout: 5000 }).catch(() => null);
             const currentUrl = page.url();
-            yield trigger.click();
+            // Bounded like the popup/download waits above: an unactionable button
+            // (e.g. "Unduh CV" over an in-page viewer) otherwise held each applicant
+            // for the full page timeout — 60s per row — before giving up.
+            try {
+                yield trigger.click({ timeout: 5000 });
+            }
+            catch (error) {
+                console.info(`[CV] ${label} control was not clickable: ${String(error).split("\n")[0]}`);
+                return "";
+            }
             const download = yield downloadPromise;
             if (download) {
                 const storageDir = path_1.default.join(__dirname, "../storage/");
@@ -1709,12 +1819,43 @@ class KitaLulus {
             var _a;
             console.info("[PHONE] Extracting WhatsApp number...");
             if ((yield page.locator(this.APPLICANT_WHATAAPPS_SELECTOR).count()) > 0) {
-                const num = (_a = yield page.locator(this.APPLICANT_WHATAAPPS_SELECTOR).textContent()) !== null && _a !== void 0 ? _a : "";
-                console.info(`[PHONE] Found: ${num || "(empty)"}`);
-                return { type: "WhatsApp", contact_number: num };
+                const num = ((_a = (yield page.locator(this.APPLICANT_WHATAAPPS_SELECTOR).textContent())) !== null && _a !== void 0 ? _a : "").trim();
+                if (num) {
+                    console.info("[PHONE] Found via the dedicated WhatsApp test-id.");
+                    return { type: "WhatsApp", contact_number: num };
+                }
             }
-            console.info("[PHONE] WhatsApp selector not found on page.");
+            // The current applicant panel has no WhatsApp test-id at all: it renders
+            // the email AND the phone under the same lbApplicantEmailText test-id
+            // (next to btnCopyEmail / btnCopyWhatsapp respectively — verified live
+            // 2026-09-13). Every row scraped with the dedicated selector alone came
+            // back with an empty phone, so pick the match that is shaped like a
+            // phone number instead of relying on its position.
+            const phone = yield this.findContactText(page, (text) => isPhoneShaped(text));
+            if (phone) {
+                console.info("[PHONE] Found via the shared contact test-id.");
+                return { type: "WhatsApp", contact_number: phone };
+            }
+            console.info("[PHONE] No phone number rendered for this applicant.");
             return { type: "", contact_number: "" };
+        });
+    }
+    /**
+     * Returns the first `lbApplicantEmailText` match whose trimmed text
+     * satisfies `accept` — the panel renders both contacts under that one
+     * test-id, so each extractor filters by shape rather than by index.
+     */
+    findContactText(page, accept) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a;
+            const matches = page.locator(this.APPLICANT_EMAIL_SELECTOR);
+            const count = yield matches.count();
+            for (let i = 0; i < count; i++) {
+                const text = ((_a = (yield matches.nth(i).textContent())) !== null && _a !== void 0 ? _a : "").trim();
+                if (text && accept(text))
+                    return text;
+            }
+            return "";
         });
     }
     /**
@@ -1726,13 +1867,11 @@ class KitaLulus {
      */
     extractEmail(page) {
         return __awaiter(this, void 0, void 0, function* () {
-            // The applicant detail page currently renders both the email and the phone
-            // number under the same lbApplicantEmailText test-id; the email is always
-            // the first match.
-            if ((yield page.locator(this.APPLICANT_EMAIL_SELECTOR).count()) > 0) {
-                return yield page.locator(this.APPLICANT_EMAIL_SELECTOR).first().textContent();
-            }
-            return "";
+            // The applicant detail page renders both the email and the phone number
+            // under the same lbApplicantEmailText test-id. Take the match shaped like
+            // an email rather than trusting position, so a reordered panel can never
+            // store a phone number as the email.
+            return this.findContactText(page, (text) => isEmailShaped(text));
         });
     }
     /**

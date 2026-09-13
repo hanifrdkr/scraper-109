@@ -1936,8 +1936,14 @@ class Glints {
             const cellText = (yield this.applicantCells(row).nth(2).innerText())
                 .replace(/\s+/g, " ")
                 .trim();
-            // Name ends right before the "<age> yo" tag when an age is shown.
-            const ageMatch = cellText.match(/^(.*?)\s+\d+\s*yo\b/i);
+            // Name ends right before the age tag when an age is shown. The tag is
+            // "<age> yo" on an English-rendered dashboard but "<age> tahun" on an
+            // Indonesian one (the language is a per-account server setting). Matching
+            // only "yo" left "Ratna Anjani 32 tahun" as the name, which then never
+            // equalled the application-detail API's "Ratna Anjani", so
+            // armApplicationDetailCapture discarded the one payload that carries the
+            // applicant's email, phone and resume key — for every applicant.
+            const ageMatch = cellText.match(/^(.*?)\s+\d+\s*(?:yo|y\.o\.|tahun|thn|years?(?:\s+old)?)\b/i);
             if (ageMatch)
                 return ageMatch[1].trim();
             // No age tag: fall back to the text before the first "·" tag separator.
