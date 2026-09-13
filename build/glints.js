@@ -1722,9 +1722,45 @@ class Glints {
                     break;
                 }
                 yield this.dismissBlockingModal(page);
-                const menuButton = rows.first().locator("button").last();
+                const firstRow = rows.first();
+                const menuButton = firstRow.locator("button").last();
                 if ((yield menuButton.count()) === 0) {
-                    console.warn("[GLINTS] Promote: the first NEW row has no menu button; stopping without moving anyone");
+                    // First live run (2026-09-13) found no <button> in the NEW row, so the
+                    // three-dot control is something else. Log control *shapes* only —
+                    // attributes, never row text — so the next run names the real control
+                    // instead of this flow guessing and clicking a wrong element.
+                    let controls = null;
+                    try {
+                        controls = yield firstRow.evaluate((row) => {
+                            var _a;
+                            const shape = (el) => ({
+                                tag: el.tagName.toLowerCase(),
+                                role: el.getAttribute("role"),
+                                aria: (el.getAttribute("aria-label") || "").slice(0, 40) || null,
+                                popup: el.getAttribute("aria-haspopup"),
+                                testid: el.getAttribute("data-testid"),
+                                cy: el.getAttribute("data-cy"),
+                                cls: (el.getAttribute("class") || "")
+                                    .split(/\s+/)
+                                    .filter((c) => /menu|more|action|dot|kebab|option|popover|dropdown|button|icon/i.test(c))
+                                    .slice(0, 4)
+                                    .join(" ") || null,
+                                icon: el.querySelector("svg") !== null,
+                            });
+                            const inRow = Array.from(row.querySelectorAll('a, [role], [aria-haspopup], [aria-label], [data-testid], [data-cy], [tabindex]'))
+                                .map(shape)
+                                .slice(0, 30);
+                            const table = (_a = row.closest("table, [class*='IndexTable']")) !== null && _a !== void 0 ? _a : document.body;
+                            const tablePopups = Array.from(table.querySelectorAll("[aria-haspopup], [data-testid*='more' i], [data-cy*='more' i], [data-testid*='action' i], [data-cy*='action' i], [aria-label*='more' i], [aria-label*='lainnya' i], [aria-label*='aksi' i]"))
+                                .map(shape)
+                                .slice(0, 15);
+                            return { rowTag: row.tagName.toLowerCase(), rowCells: row.children.length, inRow, tablePopups };
+                        });
+                    }
+                    catch (_a) {
+                        // Diagnostics only.
+                    }
+                    console.warn(`[GLINTS] Promote: the first NEW row has no menu button; stopping without moving anyone. Row controls seen: ${JSON.stringify(controls)}`);
                     break;
                 }
                 yield menuButton.click({ timeout: 15000 });
@@ -1737,7 +1773,7 @@ class Glints {
                             .map((el) => (el.textContent || "").replace(/\s+/g, " ").trim())
                             .filter((t) => t && t.length <= 40))).slice(0, 40));
                     }
-                    catch (_a) {
+                    catch (_b) {
                         // Diagnostics only.
                     }
                     console.warn(`[GLINTS] Promote: no "Pindahkan ke Terhubung" item in the row menu; stopping without moving anyone. Options seen: ${JSON.stringify(seen)}`);
