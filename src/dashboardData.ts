@@ -338,6 +338,13 @@ export interface VacancyRow {
   status: string | null;
   last_seen_at: string;
   hasDescription: boolean;
+  /**
+   * The job description text itself. Vacancy content is not personal data —
+   * unlike a candidate row, nothing here is redacted — so the dashboard
+   * shows it rather than only whether it exists. The rest of the vacancy's
+   * `raw` jsonb still never crosses the wire.
+   */
+  description: string | null;
 }
 
 export async function getVacancies(
@@ -372,6 +379,7 @@ export async function getVacancies(
       status: row.status,
       last_seen_at: row.last_seen_at,
       hasDescription: typeof row.description === "string" && row.description.trim().length > 0,
+      description: typeof row.description === "string" && row.description.trim() ? row.description.trim() : null,
     }));
   } catch (error) {
     throw sanitize("fetch vacancies", error);

@@ -306,6 +306,7 @@ function getVacancies(config, opts) {
                 status: row.status,
                 last_seen_at: row.last_seen_at,
                 hasDescription: typeof row.description === "string" && row.description.trim().length > 0,
+                description: typeof row.description === "string" && row.description.trim() ? row.description.trim() : null,
             }));
         }
         catch (error) {

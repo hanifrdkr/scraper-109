@@ -610,6 +610,25 @@ const HTML = `<!DOCTYPE html>
 
     .badge-yes { color: #15803d; font-weight: 600; }
     .badge-no  { color: #999; }
+    /* Job description: collapsed to its badge until opened, so one long
+       posting cannot push the table's other columns off screen. */
+    .jd summary { cursor: pointer; list-style: none; }
+    .jd summary::-webkit-details-marker { display: none; }
+    .jd summary::after { content: " ▾"; color: #999; }
+    .jd[open] summary::after { content: " ▴"; }
+    .jd-text {
+      white-space: pre-wrap;
+      max-width: 46ch;
+      max-height: 18em;
+      overflow-y: auto;
+      margin-top: .4em;
+      padding: .5em .6em;
+      background: #f6f7f9;
+      border-radius: 6px;
+      font-size: .92em;
+      line-height: 1.45;
+      color: #333;
+    }
 
     .dashboard-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
 
@@ -1196,7 +1215,9 @@ const HTML = `<!DOCTYPE html>
             <tr>
               <td><span class="tag">\${esc(v.portal)}</span></td>
               <td>\${esc(v.title || '—')}</td>
-              <td>\${v.hasDescription ? '<span class="badge-yes">captured</span>' : '<span class="badge-no">missing</span>'}</td>
+              <td>\${v.description
+                ? '<details class="jd"><summary><span class="badge-yes">captured</span></summary><div class="jd-text">' + esc(v.description) + '</div></details>'
+                : '<span class="badge-no">missing</span>'}</td>
               <td>\${v.total_applicant ?? '—'}</td>
               <td>\${safeHref(v.link) ? '<a href="' + safeHref(v.link) + '" target="_blank">link</a>' : '—'}</td>
               <td>\${esc(fmtTime(v.last_seen_at))}</td>

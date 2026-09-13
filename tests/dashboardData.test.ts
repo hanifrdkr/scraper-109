@@ -163,7 +163,7 @@ describe("getPortalSummaries", () => {
 });
 
 describe("getVacancies", () => {
-  it("never forwards the raw jsonb payload, only a description-present flag", async () => {
+  it("forwards the description text but never the raw jsonb payload", async () => {
     jest.clearAllMocks();
     mockedAxios.get.mockResolvedValue({
       data: [
@@ -176,6 +176,10 @@ describe("getVacancies", () => {
     expect(rows[0]).not.toHaveProperty("raw");
     expect(rows[0].hasDescription).toBe(true);
     expect(rows[1].hasDescription).toBe(false);
+    // The description text itself is shown in the UI (vacancy content is not
+    // personal data); an empty one normalizes to null, not "".
+    expect(rows[0].description).toBe("Full JD text");
+    expect(rows[1].description).toBeNull();
     // The description lives in its own column since the add_vacancy_description
     // migration; reading it back out of raw->>description reports every
     // vacancy as description-less.
